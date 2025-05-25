@@ -19,7 +19,7 @@ Production-ready Ansible playbooks for automated Kubernetes cluster deployment:
 - ✅ **Storage Provisioning** - Local path provisioner for persistent volumes
 
 **Infrastructure Supported:**
-- 6 Ubuntu hosts (k8s-master, workers, load balancer)
+- 6 Ubuntu hosts (master-node, worker nodes, load balancer)
 - External etcd cluster for HA
 - HAProxy + Keepalived load balancing
 - Virtual IP failover (192.168.1.100)

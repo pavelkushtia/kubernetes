@@ -10,6 +10,27 @@ This repository provides **production-ready Ansible playbooks** for setting up r
 - ✅ **High Availability**: Multi-master setup with zero downtime
 - ✅ **Complete Monitoring**: Prometheus + Grafana + AlertManager stack
 - ✅ **Ingress Ready**: NGINX controller with automatic DNS via nip.io
+- ✅ **Battle-tested**: Includes fixes for all common deployment issues
+
+## 🆘 **TROUBLESHOOTING**
+
+**Encountering issues?** Check our comprehensive troubleshooting guide:
+📖 **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Solutions for all common deployment problems
+
+**Common fixes included:**
+- ✅ Sudo password issues
+- ✅ Host pattern mismatches  
+- ✅ Repository signature problems
+- ✅ CNI plugin initialization
+- ✅ Storage class issues
+- ✅ Port conflicts
+- ✅ Monitoring stack problems
+
+**Quick fix for most issues:**
+```bash
+# Always use this flag for sudo operations
+ansible-playbook -i inventory.ini improved_k8s_cluster.yaml --ask-become-pass
+```
 
 ---
 
@@ -56,9 +77,9 @@ Your available hosts from inventory files:
 
 | Host | IP | Role in Basic | Role in HA | User |
 |------|----|--------------|-----------| -----|
-| k8s-master | 192.168.1.10 | Master | Master 1 | sanzad |
-| k8s-worker1 | 192.168.1.11 | Worker | Worker | sanzad |
-| k8s-worker2 | 192.168.1.12 | Worker | Worker | sanzad |
+| master-node | 192.168.1.82 | Master | Master 1 | sanzad |
+| worker-node1 | 192.168.1.95 | Worker | Worker | sanzad |
+| worker-node2 | 192.168.1.94 | Worker | Worker | sanzad |
 | sanzad-ubuntu-21 | 192.168.1.93 | Available | Load Balancer | sanzad |
 | sanzad-ubuntu-22 | 192.168.1.104 | Available | Master 2 | sanzad |
 | sanzad-ubuntu-23 | 192.168.1.105 | Available | Master 3 | sanzad |
@@ -111,16 +132,16 @@ ansible-playbook -i inventory.ini production_addons.yaml
 
 | Feature | Basic Setup | HA Setup |
 |---------|-------------|----------|
-| **Masters** | 1 (k8s-master) | 3 (k8s-master, ubuntu-22, ubuntu-23) |
-| **Workers** | 2 (worker1, worker2) | 3 (worker1, worker2, ubuntu-21 as LB) |
+| **Masters** | 1 (master-node) | 3 (master-node, ubuntu-22, ubuntu-23) |
+| **Workers** | 2 (worker-node1, worker-node2) | 3 (worker-node1, worker-node2, ubuntu-21 as LB) |
 | **Load Balancer** | ❌ None | ✅ HAProxy + Keepalived |
 | **etcd** | ❌ Single (on master) | ✅ External cluster (3 nodes) |
 | **Downtime Risk** | ❌ High (master failure = outage) | ✅ Zero (automatic failover) |
 | **Setup Time** | ~10 minutes | ~20 minutes |
 | **Resource Usage** | Lower | Higher |
 | **Production Ready** | ❌ Development only | ✅ Production grade |
-| **API Access** | https://192.168.1.10:6443 | https://192.168.1.100:6443 |
-| **Monitoring Access** | grafana.192.168.1.10.nip.io:30080 | grafana.192.168.1.100.nip.io:30080 |
+| **API Access** | https://192.168.1.82:6443 | https://192.168.1.100:6443 |
+| **Monitoring Access** | grafana.192.168.1.82.nip.io:30080 | grafana.192.168.1.100.nip.io:30080 |
 
 ---
 
@@ -129,8 +150,8 @@ ansible-playbook -i inventory.ini production_addons.yaml
 ## **Basic Single-Master Setup**
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│    k8s-master   │    │   k8s-worker1   │    │   k8s-worker2   │
-│   192.168.1.10  │    │   192.168.1.11  │    │   192.168.1.12  │
+│   master-node   │    │  worker-node1   │    │  worker-node2   │
+│   192.168.1.82  │    │   192.168.1.95  │    │   192.168.1.94  │
 │     (sanzad)    │    │     (sanzad)    │    │     (sanzad)    │
 │                 │    │                 │    │                 │
 │  • API Server   │    │  • kubelet      │    │  • kubelet      │
@@ -151,8 +172,8 @@ ansible-playbook -i inventory.ini production_addons.yaml
         ┌────────────────────────────┼────────────────────────────┐
         │                            │                            │
 ┌───────▼──────┐            ┌────────▼──────┐            ┌───────▼──────┐
-│  k8s-master  │            │sanzad-ubuntu-22│           │sanzad-ubuntu-23│
-│192.168.1.10  │            │ 192.168.1.104 │           │ 192.168.1.105 │
+│  master-node │            │sanzad-ubuntu-22│           │sanzad-ubuntu-23│
+│192.168.1.82  │            │ 192.168.1.104 │           │ 192.168.1.105 │
 │   (sanzad)   │            │   (sanzad)    │           │   (sanzad)    │
 │              │            │               │            │              │
 │ • API Server │            │ • API Server  │            │ • API Server │
@@ -161,8 +182,8 @@ ansible-playbook -i inventory.ini production_addons.yaml
 └──────────────┘            └───────────────┘            └──────────────┘
 
         ┌─────────────────┐                      ┌─────────────────┐
-        │   k8s-worker1   │                      │   k8s-worker2   │
-        │   192.168.1.11  │                      │   192.168.1.12  │
+        │  worker-node1   │                      │  worker-node2   │
+        │   192.168.1.95  │                      │   192.168.1.94  │
         │     (sanzad)    │                      │     (sanzad)    │
         │                 │                      │                 │
         │  • Applications │                      │  • Applications │
@@ -200,10 +221,10 @@ ansible-playbook -i inventory.ini production_addons.yaml
 # 🔗 **ACCESS INFORMATION**
 
 ## **After Basic Setup:**
-- **Cluster API**: `https://192.168.1.10:6443`
-- **Grafana**: `http://grafana.192.168.1.10.nip.io:30080` (admin/admin123)
-- **Prometheus**: `http://prometheus.192.168.1.10.nip.io:30080`
-- **AlertManager**: `http://alertmanager.192.168.1.10.nip.io:30080`
+- **Cluster API**: `https://192.168.1.82:6443`
+- **Grafana**: `http://grafana.192.168.1.82.nip.io:30080` (admin/admin123)
+- **Prometheus**: `http://prometheus.192.168.1.82.nip.io:30080`
+- **AlertManager**: `http://alertmanager.192.168.1.82.nip.io:30080`
 
 ## **After HA Setup (Recommended):**
 - **Cluster API**: `https://192.168.1.100:6443` (via load balancer VIP)
@@ -248,7 +269,7 @@ kubectl get nodes -o wide
 kubectl get pods --all-namespaces
 
 # Copy kubeconfig from master
-scp sanzad@192.168.1.10:/etc/kubernetes/admin.conf ~/.kube/config
+scp sanzad@192.168.1.82:/etc/kubernetes/admin.conf ~/.kube/config
 
 # Deploy test application
 kubectl create deployment nginx --image=nginx
@@ -309,7 +330,7 @@ ansile_k8s_install/
 ### **SSH Connection Failed**
 ```bash
 # Test SSH connectivity
-ssh -o ConnectTimeout=5 sanzad@192.168.1.10
+ssh -o ConnectTimeout=5 sanzad@192.168.1.82
 
 # Check SSH key permissions
 chmod 600 ~/.ssh/id_rsa

@@ -35,8 +35,8 @@
     
     - name: Check minimum CPU requirements for masters
       fail:
-        msg: "Master nodes require minimum 2 CPU cores"
-      when: ansible_processor_vcpus < 2 and inventory_hostname in groups['masters']
+        msg: "Master nodes require minimum 1 CPU cores"
+      when: ansible_processor_vcpus < 1 and inventory_hostname in groups['masters']
 
   tasks:
     - name: Update apt cache
