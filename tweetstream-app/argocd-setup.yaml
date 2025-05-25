@@ -315,7 +315,7 @@ spec:
   type: ClusterIP
   ports:
   - name: https
-    port: 443
+    port: 80
     protocol: TCP
     targetPort: 8080
   - name: grpc

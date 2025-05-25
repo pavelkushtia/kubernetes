@@ -19,7 +19,7 @@ spec:
   # Source configuration - Git repository
   source:
     # Replace with your actual Git repository URL
-    repoURL: https://github.com/YOUR_USERNAME/kubernetes-tweetstream.git
+    repoURL: https://github.com/pavelkushtia/kubernetes.git
     targetRevision: HEAD
     path: tweetstream-app
     
@@ -84,7 +84,7 @@ spec:
   
   # Source repositories
   sourceRepos:
-  - 'https://github.com/YOUR_USERNAME/kubernetes-tweetstream.git'
+  - 'https://github.com/pavelkushtia/kubernetes.git'
   - 'https://github.com/*'  # Allow any GitHub repo for flexibility
   
   # Destination clusters and namespaces
@@ -163,7 +163,7 @@ spec:
   
   # Source configuration
   source:
-    repoURL: https://github.com/YOUR_USERNAME/kubernetes-tweetstream.git
+    repoURL: https://github.com/pavelkushtia/kubernetes.git
     targetRevision: HEAD
     path: tweetstream-app
     
