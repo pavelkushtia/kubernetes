@@ -1,6 +1,6 @@
 ---
 # TweetStream ArgoCD Application
-# This defines how ArgoCD should deploy and manage TweetStream from Git
+# This defines how ArgoCD should deploy and manage TweetStream from Git using Helm
 
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -16,20 +16,28 @@ spec:
   # Project (use default for now)
   project: default
   
-  # Source configuration - Git repository
+  # Source configuration - Git repository with Helm chart
   source:
     # Replace with your actual Git repository URL
     repoURL: https://github.com/pavelkushtia/kubernetes.git
     targetRevision: HEAD
-    path: tweetstream-app
+    path: tweetstream-app/helm-chart/tweetstream
     
-    # Directory structure in the repo
-    directory:
-      recurse: true
-      include: |
-        tweetstream-app.yaml
-        monitoring-exporters.yaml
-        grafana-dashboard.yaml
+    # Helm configuration
+    helm:
+      # Values files to use
+      valueFiles:
+      - values.yaml
+      
+      # Parameters to override
+      parameters:
+      - name: global.environment
+        value: production
+      - name: ingress.hosts[0].host
+        value: tweetstream.192.168.1.82.nip.io
+      
+      # Release name
+      releaseName: tweetstream
   
   # Destination configuration
   destination:
@@ -146,7 +154,7 @@ spec:
     - tweetstream-developers
 
 ---
-# Alternative Application using the Project
+# Alternative Application using the Project with Helm
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -161,23 +169,30 @@ spec:
   # Use the custom project
   project: tweetstream-project
   
-  # Source configuration
+  # Source configuration with Helm
   source:
     repoURL: https://github.com/pavelkushtia/kubernetes.git
     targetRevision: HEAD
-    path: tweetstream-app
+    path: tweetstream-app/helm-chart/tweetstream
     
-    directory:
-      recurse: true
-      include: |
-        tweetstream-app.yaml
-        monitoring-exporters.yaml
-        grafana-dashboard.yaml
+    helm:
+      valueFiles:
+      - values.yaml
+      
+      parameters:
+      - name: global.environment
+        value: staging
+      - name: api.replicaCount
+        value: "2"
+      - name: frontend.replicaCount
+        value: "2"
+      
+      releaseName: tweetstream-staging
   
   # Destination
   destination:
     server: https://kubernetes.default.svc
-    namespace: tweetstream
+    namespace: tweetstream-staging
   
   # Enhanced sync policy
   syncPolicy:
@@ -198,19 +213,4 @@ spec:
       backoff:
         duration: 5s
         factor: 2
-        maxDuration: 3m
-  
-  # Ignore differences for HPA-managed resources
-  ignoreDifferences:
-  - group: apps
-    kind: Deployment
-    name: tweetstream-api
-    jsonPointers:
-    - /spec/replicas
-  - group: apps
-    kind: Deployment
-    name: tweetstream-frontend
-    jsonPointers:
-    - /spec/replicas
-  
-  revisionHistoryLimit: 10 
+        maxDuration: 3m 
