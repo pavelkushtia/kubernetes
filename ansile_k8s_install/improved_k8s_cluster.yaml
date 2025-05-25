@@ -2,8 +2,9 @@
 # Improved Ansible playbook to set up a robust Kubernetes cluster using kubeadm
 # Enhanced with security, fault tolerance, and validation
 # Updated with fixes from troubleshooting session
+# SAFE FOR EXISTING CLUSTERS - Added protection checks
 
-- name: Validate prerequisites
+- name: Validate prerequisites and cluster state
   hosts: all
   become: true
   vars:
@@ -30,6 +31,34 @@
         msg: "Minimum 1 CPU cores required"  # Relaxed from 2 to 1 for single-node setups
       when: ansible_processor_vcpus < 1
 
+    # SAFETY CHECK: Prevent running on existing clusters unless explicitly forced
+    - name: Check if Kubernetes is already running
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: existing_cluster
+
+    - name: Warn about existing cluster
+      pause:
+        prompt: |
+          ⚠️  WARNING: Kubernetes cluster already exists on {{ inventory_hostname }}!
+          
+          Running this playbook will:
+          - Reset the existing cluster
+          - Destroy all data and configurations
+          - Remove all pods and applications
+          
+          Are you ABSOLUTELY SURE you want to continue? (yes/no)
+      when: existing_cluster.stat.exists and force_reset is not defined
+      register: user_confirmation
+
+    - name: Abort if user doesn't confirm
+      fail:
+        msg: "Playbook aborted by user. To force reset, add -e force_reset=true"
+      when: 
+        - existing_cluster.stat.exists 
+        - force_reset is not defined
+        - user_confirmation.user_input != "yes"
+
   tasks:
     - name: Update apt cache
       apt:
@@ -55,6 +84,11 @@
   hosts: all
   become: true
   tasks:
+    # Only run cleanup if explicitly forced or no cluster exists
+    - name: Check if cleanup should run
+      set_fact:
+        should_cleanup: "{{ force_reset is defined or not existing_cluster.stat.exists }}"
+
     # Clean up old Kubernetes repositories that cause issues
     - name: Remove old Kubernetes repository files
       file:
@@ -64,12 +98,14 @@
         - /etc/apt/sources.list.d/kubernetes.list
         - /etc/apt/keyrings/kubernetes-apt-keyring.gpg
       ignore_errors: yes
+      when: should_cleanup
 
     - name: Reset Kubernetes (if previously initialized)
       shell: |
         kubeadm reset -f --cri-socket unix:///var/run/containerd/containerd.sock
         iptables -F && iptables -t nat -F && iptables -t mangle -F && iptables -X
       ignore_errors: yes
+      when: should_cleanup
 
     - name: Remove stale configurations and data
       file:
@@ -82,6 +118,7 @@
         - /etc/kubernetes
         - ~/.kube
       ignore_errors: yes
+      when: should_cleanup
 
     - name: Remove stale network interfaces
       shell: |
@@ -89,6 +126,7 @@
           ip link delete $iface 2>/dev/null || true
         done
       ignore_errors: yes
+      when: should_cleanup
 
     # Update apt cache after cleanup
     - name: Update apt cache after cleanup
@@ -96,6 +134,7 @@
         update_cache: yes
       retries: 3
       delay: 5
+      when: should_cleanup
 
 - name: Configure system for Kubernetes
   hosts: all
@@ -191,19 +230,25 @@
   become: true
   vars:
     k8s_version: "1.28.0"
-    containerd_version: "1.7.27"
+    containerd_version: "1.7.*"  # More flexible version matching
     calico_version: "v3.27.0"
     cluster_name: "k8s-cluster"
     pod_network_cidr: "192.168.0.0/16"
     service_subnet: "10.96.0.0/12"
   tasks:
-    - name: Install containerd
+    - name: Check if containerd is already installed
+      shell: containerd --version
+      register: containerd_check
+      ignore_errors: yes
+
+    - name: Install containerd (if not present or force_reset)
       apt:
-        name: "containerd.io={{ containerd_version }}*"
+        name: "containerd.io={{ containerd_version }}"
         state: present
         update_cache: yes
       retries: 3
       delay: 5
+      when: containerd_check.rc != 0 or force_reset is defined
 
     - name: Create containerd config directory
       file:
@@ -211,10 +256,14 @@
         state: directory
         mode: '0755'
 
-    - name: Generate containerd configuration
+    - name: Check if containerd config exists
+      stat:
+        path: /etc/containerd/config.toml
+      register: containerd_config
+
+    - name: Generate containerd configuration (if not exists or force_reset)
       shell: containerd config default > /etc/containerd/config.toml
-      args:
-        creates: /etc/containerd/config.toml
+      when: not containerd_config.stat.exists or force_reset is defined
 
     - name: Configure containerd to use systemd cgroup driver
       replace:
@@ -240,12 +289,17 @@
   become: true
   vars:
     k8s_version: "1.28.0"
-    containerd_version: "1.7.27"
+    containerd_version: "1.7.*"
     calico_version: "v3.27.0"
     cluster_name: "k8s-cluster"
     pod_network_cidr: "192.168.0.0/16"
     service_subnet: "10.96.0.0/12"
   tasks:
+    - name: Check if Kubernetes components are already installed
+      shell: kubelet --version
+      register: k8s_check
+      ignore_errors: yes
+
     # Create keyrings directory if it doesn't exist
     - name: Create apt keyrings directory
       file:
@@ -253,20 +307,22 @@
         state: directory
         mode: '0755'
 
-    - name: Add Kubernetes signing key
+    - name: Add Kubernetes signing key (if not installed or force_reset)
       get_url:
         url: https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key
         dest: /tmp/k8s-key
         mode: '0644'
       retries: 3
       delay: 5
+      when: k8s_check.rc != 0 or force_reset is defined
 
-    - name: Add Kubernetes signing key to keyring
+    - name: Add Kubernetes signing key to keyring (if not installed or force_reset)
       shell: cat /tmp/k8s-key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
       args:
         creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      when: k8s_check.rc != 0 or force_reset is defined
 
-    - name: Add Kubernetes repository
+    - name: Add Kubernetes repository (if not installed or force_reset)
       apt_repository:
         repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /"
         state: present
@@ -274,6 +330,7 @@
         update_cache: yes
       retries: 3
       delay: 5
+      when: k8s_check.rc != 0 or force_reset is defined
 
     # Handle potential repository issues
     - name: Fix repository permissions if needed
@@ -281,8 +338,9 @@
         chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg
         apt-get update
       ignore_errors: yes
+      when: k8s_check.rc != 0 or force_reset is defined
 
-    - name: Install specific versions of Kubernetes components
+    - name: Install specific versions of Kubernetes components (if not installed or force_reset)
       apt:
         name:
           - "kubelet={{ k8s_version }}*"
@@ -292,6 +350,7 @@
         update_cache: yes
       retries: 3
       delay: 5
+      when: k8s_check.rc != 0 or force_reset is defined
 
     - name: Hold Kubernetes packages
       dpkg_selections:
@@ -301,8 +360,9 @@
         - kubelet
         - kubeadm
         - kubectl
+      when: k8s_check.rc != 0 or force_reset is defined
 
-    - name: Configure kubelet
+    - name: Configure kubelet (if not installed or force_reset)
       copy:
         dest: /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
         content: |
@@ -315,6 +375,7 @@
           ExecStart=/usr/bin/kubelet $KUBELET_KUBECONFIG_ARGS $KUBELET_CONFIG_ARGS $KUBELET_KUBEADM_ARGS $KUBELET_EXTRA_ARGS
         backup: yes
       notify: restart kubelet
+      when: k8s_check.rc != 0 or force_reset is defined
 
     - name: Enable kubelet
       systemd:

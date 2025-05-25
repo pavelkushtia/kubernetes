@@ -2,18 +2,47 @@
 # Production Kubernetes Addons Playbook
 # Installs monitoring stack, ingress controller, and essential tools
 # Updated with fixes from troubleshooting session
+# SAFE FOR EXISTING CLUSTERS - Checks for existing installations
+
+- name: Validate cluster readiness
+  hosts: master
+  become: true
+  tasks:
+    - name: Check if Kubernetes cluster is running
+      shell: kubectl get nodes
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: cluster_check
+      failed_when: false
+
+    - name: Fail if cluster is not ready
+      fail:
+        msg: "Kubernetes cluster is not running or accessible. Please ensure cluster is healthy first."
+      when: cluster_check.rc != 0
+
+    - name: Display current cluster status
+      debug:
+        msg: "✅ Cluster is healthy. Proceeding with addon installation."
 
 - name: Install Local Path Provisioner for Storage (Early Installation)
   hosts: master
   become: true
   tasks:
-    - name: Install local-path-provisioner
+    - name: Check if local-path-provisioner already exists
+      shell: kubectl get deployment local-path-provisioner -n local-path-storage
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: provisioner_check
+      failed_when: false
+
+    - name: Install local-path-provisioner (if not exists)
       shell: |
         kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.24/deploy/local-path-storage.yaml
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
       retries: 3
       delay: 5
+      when: provisioner_check.rc != 0
 
     - name: Wait for local-path-provisioner to be ready
       shell: kubectl get deployment local-path-provisioner -n local-path-storage -o jsonpath='{.status.readyReplicas}'
@@ -24,11 +53,19 @@
       retries: 20
       delay: 10
 
-    - name: Set local-path as default storage class
+    - name: Check if local-path is already default storage class
+      shell: kubectl get storageclass local-path -o jsonpath='{.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: default_sc_check
+      failed_when: false
+
+    - name: Set local-path as default storage class (if not already)
       shell: |
         kubectl patch storageclass local-path -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
+      when: default_sc_check.stdout != "true"
 
 - name: Install Helm package manager
   hosts: master
@@ -36,30 +73,38 @@
   vars:
     helm_version: "3.13.0"
   tasks:
-    - name: Download Helm installation script
+    - name: Check if Helm is already installed
+      shell: helm version
+      register: helm_check
+      failed_when: false
+
+    - name: Download Helm installation script (if not installed)
       get_url:
         url: https://get.helm.sh/helm-v{{ helm_version }}-linux-amd64.tar.gz
         dest: /tmp/helm.tar.gz
         mode: '0644'
       retries: 3
       delay: 5
+      when: helm_check.rc != 0
 
-    - name: Extract Helm binary
+    - name: Extract Helm binary (if not installed)
       unarchive:
         src: /tmp/helm.tar.gz
         dest: /tmp
         remote_src: yes
         creates: /tmp/linux-amd64/helm
+      when: helm_check.rc != 0
 
-    - name: Install Helm binary
+    - name: Install Helm binary (if not installed)
       copy:
         src: /tmp/linux-amd64/helm
         dest: /usr/local/bin/helm
         mode: '0755'
         remote_src: yes
+      when: helm_check.rc != 0
 
     - name: Verify Helm installation
-      shell: helm version --short
+      shell: helm version
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
       register: helm_version_output
@@ -68,7 +113,14 @@
       debug:
         var: helm_version_output.stdout
 
-    - name: Add essential Helm repositories
+    - name: Check if Helm repositories are already added
+      shell: helm repo list
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: repo_check
+      failed_when: false
+
+    - name: Add essential Helm repositories (if not already added)
       shell: |
         helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
         helm repo add grafana https://grafana.github.io/helm-charts
@@ -80,12 +132,20 @@
         KUBECONFIG: /etc/kubernetes/admin.conf
       retries: 3
       delay: 5
+      when: repo_check.rc != 0 or "prometheus-community" not in repo_check.stdout
 
 - name: Install Metrics Server
   hosts: master
   become: true
   tasks:
-    - name: Install metrics-server using Helm
+    - name: Check if metrics-server already exists
+      shell: kubectl get deployment metrics-server -n kube-system
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: metrics_check
+      failed_when: false
+
+    - name: Install metrics-server using Helm (if not exists)
       shell: |
         helm upgrade --install metrics-server metrics-server/metrics-server \
           --namespace kube-system \
@@ -94,6 +154,7 @@
         KUBECONFIG: /etc/kubernetes/admin.conf
       retries: 3
       delay: 10
+      when: metrics_check.rc != 0
 
     - name: Wait for metrics-server to be ready
       shell: kubectl get deployment metrics-server -n kube-system -o jsonpath='{.status.readyReplicas}'
@@ -110,12 +171,27 @@
   vars:
     ingress_controller: "nginx"  # Options: nginx, traefik
   tasks:
-    - name: Create ingress-nginx namespace
+    - name: Check if ingress-nginx namespace exists
+      shell: kubectl get namespace ingress-nginx
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: ingress_ns_check
+      failed_when: false
+
+    - name: Create ingress-nginx namespace (if not exists)
       shell: kubectl create namespace ingress-nginx --dry-run=client -o yaml | kubectl apply -f -
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
+      when: ingress_ns_check.rc != 0
 
-    - name: Install NGINX Ingress Controller
+    - name: Check if NGINX Ingress Controller already exists
+      shell: kubectl get deployment ingress-nginx-controller -n ingress-nginx
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: nginx_ingress_check
+      failed_when: false
+
+    - name: Install NGINX Ingress Controller (if not exists)
       shell: |
         helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
           --namespace ingress-nginx \
@@ -127,7 +203,7 @@
           --set controller.podAnnotations."prometheus\.io/port"="10254"
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
-      when: ingress_controller == "nginx"
+      when: ingress_controller == "nginx" and nginx_ingress_check.rc != 0
       retries: 3
       delay: 10
 
@@ -187,12 +263,27 @@
     monitoring_namespace: "monitoring"
     grafana_admin_password: "admin123"  # Change this in production!
   tasks:
-    - name: Create monitoring namespace
+    - name: Check if monitoring namespace exists
+      shell: kubectl get namespace {{ monitoring_namespace }}
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: monitoring_ns_check
+      failed_when: false
+
+    - name: Create monitoring namespace (if not exists)
       shell: kubectl create namespace {{ monitoring_namespace }} --dry-run=client -o yaml | kubectl apply -f -
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
+      when: monitoring_ns_check.rc != 0
 
-    - name: Create Prometheus values file
+    - name: Check if Prometheus stack already exists
+      shell: kubectl get deployment prometheus-grafana -n {{ monitoring_namespace }}
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: prometheus_stack_check
+      failed_when: false
+
+    - name: Create Prometheus values file (if stack doesn't exist)
       copy:
         dest: /tmp/prometheus-values.yaml
         content: |
@@ -273,8 +364,9 @@
               kubernetesSystem: true
               node: true
               prometheus: true
+      when: prometheus_stack_check.rc != 0
 
-    - name: Install kube-prometheus-stack
+    - name: Install kube-prometheus-stack (if not exists)
       shell: |
         helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
           --namespace {{ monitoring_namespace }} \
@@ -286,6 +378,7 @@
         KUBECONFIG: /etc/kubernetes/admin.conf
       retries: 2
       delay: 30
+      when: prometheus_stack_check.rc != 0
 
     - name: Wait for Prometheus to be ready
       shell: kubectl get statefulset prometheus-prometheus-kube-prometheus-prometheus -n {{ monitoring_namespace }} -o jsonpath='{.status.readyReplicas}'
