@@ -1,0 +1,462 @@
+---
+# Kubernetes Cluster Upgrade Playbook
+# Safely upgrades Kubernetes cluster using kubeadm upgrade workflow
+# Supports rolling upgrades with minimal downtime
+
+- name: Validate upgrade prerequisites
+  hosts: all
+  become: true
+  vars:
+    # UPGRADE CONFIGURATION - MODIFY THESE VALUES
+    current_k8s_version: "1.28.0"      # Current cluster version
+    target_k8s_version: "1.29.0"       # Target upgrade version
+    target_k8s_minor: "1.29"           # Target minor version for repository
+    containerd_version: "1.7.*"        # Containerd version (flexible)
+    calico_version: "v3.28.0"          # Updated Calico for K8s 1.29
+    
+    # SAFETY SETTINGS
+    backup_enabled: true                # Create etcd backup before upgrade
+    drain_timeout: "300s"              # Node drain timeout
+    upgrade_timeout: "600s"            # Upgrade operation timeout
+    
+  pre_tasks:
+    - name: Check if cluster is accessible
+      shell: kubectl get nodes
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: cluster_check
+      failed_when: false
+      delegate_to: "{{ groups['master'][0] }}"
+      run_once: true
+
+    - name: Fail if cluster is not accessible
+      fail:
+        msg: "Kubernetes cluster is not accessible. Cannot proceed with upgrade."
+      when: cluster_check.rc != 0
+      run_once: true
+
+    - name: Get current cluster version
+      shell: kubectl version --output=yaml | grep gitVersion | head -1 | awk '{print $2}' | sed 's/v//'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: current_version
+      delegate_to: "{{ groups['master'][0] }}"
+      run_once: true
+
+    - name: Validate upgrade path
+      fail:
+        msg: |
+          Invalid upgrade path detected!
+          Current version: {{ current_version.stdout }}
+          Target version: {{ target_k8s_version }}
+          
+          Kubernetes only supports upgrades between adjacent minor versions.
+          Please upgrade incrementally (e.g., 1.28 -> 1.29 -> 1.30).
+      when: 
+        - current_version.stdout is version(target_k8s_version, '>=')
+        - current_version.stdout.split('.')[1] | int != (target_k8s_version.split('.')[1] | int - 1)
+      run_once: true
+
+    - name: Display upgrade plan
+      debug:
+        msg: |
+          🚀 KUBERNETES UPGRADE PLAN
+          ==========================
+          Current Version: {{ current_version.stdout }}
+          Target Version:  {{ target_k8s_version }}
+          
+          Upgrade Sequence:
+          1. Backup etcd (if enabled)
+          2. Upgrade control plane (master nodes)
+          3. Upgrade worker nodes (rolling upgrade)
+          4. Upgrade CNI and addons
+          
+          ⚠️  This process will cause brief service interruptions!
+      run_once: true
+
+    - name: Confirm upgrade
+      pause:
+        prompt: |
+          Are you ready to proceed with the Kubernetes upgrade?
+          
+          This will:
+          - Upgrade from {{ current_version.stdout }} to {{ target_k8s_version }}
+          - Drain and upgrade nodes one by one
+          - May cause temporary service disruptions
+          
+          Type 'yes' to continue or 'no' to abort
+      register: upgrade_confirmation
+      when: auto_confirm is not defined
+      run_once: true
+
+    - name: Abort if user doesn't confirm
+      fail:
+        msg: "Upgrade aborted by user"
+      when: 
+        - auto_confirm is not defined
+        - upgrade_confirmation.user_input != "yes"
+      run_once: true
+
+  tasks:
+    - name: Create upgrade log directory
+      file:
+        path: /var/log/k8s-upgrade
+        state: directory
+        mode: '0755'
+
+    - name: Log upgrade start
+      copy:
+        content: |
+          Kubernetes Upgrade Started: {{ ansible_date_time.iso8601 }}
+          From: {{ current_version.stdout }}
+          To: {{ target_k8s_version }}
+          Node: {{ inventory_hostname }}
+        dest: /var/log/k8s-upgrade/upgrade-{{ ansible_date_time.epoch }}.log
+
+- name: Backup etcd (if enabled)
+  hosts: master
+  become: true
+  tasks:
+    - name: Create etcd backup
+      shell: |
+        ETCDCTL_API=3 etcdctl snapshot save /var/lib/etcd/backup-$(date +%Y%m%d-%H%M%S).db \
+          --endpoints=https://127.0.0.1:2379 \
+          --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+          --cert=/etc/kubernetes/pki/etcd/server.crt \
+          --key=/etc/kubernetes/pki/etcd/server.key
+      when: backup_enabled
+      ignore_errors: yes
+
+    - name: Verify backup
+      shell: |
+        ETCDCTL_API=3 etcdctl snapshot status /var/lib/etcd/backup-*.db \
+          --write-out=table
+      when: backup_enabled
+      register: backup_status
+      ignore_errors: yes
+
+    - name: Display backup status
+      debug:
+        var: backup_status.stdout_lines
+      when: backup_enabled and backup_status.stdout is defined
+
+- name: Update package repositories for upgrade
+  hosts: all
+  become: true
+  tasks:
+    - name: Remove package holds
+      dpkg_selections:
+        name: "{{ item }}"
+        selection: install
+      loop:
+        - kubelet
+        - kubeadm
+        - kubectl
+
+    - name: Update Kubernetes repository for target version
+      apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{{ target_k8s_minor }}/deb/ /"
+        state: present
+        filename: kubernetes
+        update_cache: yes
+      retries: 3
+      delay: 5
+
+    - name: Update package cache
+      apt:
+        update_cache: yes
+      retries: 3
+      delay: 5
+
+- name: Upgrade control plane (master nodes)
+  hosts: master
+  become: true
+  serial: 1  # Upgrade masters one at a time
+  tasks:
+    - name: Upgrade kubeadm on master
+      apt:
+        name: "kubeadm={{ target_k8s_version }}*"
+        state: present
+        update_cache: yes
+      retries: 3
+      delay: 5
+
+    - name: Verify kubeadm version
+      shell: kubeadm version -o short
+      register: kubeadm_version
+
+    - name: Display kubeadm version
+      debug:
+        msg: "kubeadm upgraded to: {{ kubeadm_version.stdout }}"
+
+    - name: Plan the upgrade (dry-run)
+      shell: kubeadm upgrade plan
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: upgrade_plan
+      when: inventory_hostname == groups['master'][0]
+
+    - name: Display upgrade plan
+      debug:
+        var: upgrade_plan.stdout_lines
+      when: inventory_hostname == groups['master'][0] and upgrade_plan.stdout is defined
+
+    - name: Apply upgrade on first master
+      shell: kubeadm upgrade apply v{{ target_k8s_version }} -y
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: upgrade_apply
+      when: inventory_hostname == groups['master'][0]
+      timeout: "{{ upgrade_timeout }}"
+
+    - name: Apply upgrade on additional masters
+      shell: kubeadm upgrade node
+      register: upgrade_node
+      when: inventory_hostname != groups['master'][0]
+      timeout: "{{ upgrade_timeout }}"
+
+    - name: Drain master node
+      shell: kubectl drain {{ inventory_hostname }} --ignore-daemonsets --delete-emptydir-data --force --timeout={{ drain_timeout }}
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      delegate_to: "{{ groups['master'][0] }}"
+      when: inventory_hostname != groups['master'][0]
+
+    - name: Upgrade kubelet and kubectl on master
+      apt:
+        name:
+          - "kubelet={{ target_k8s_version }}*"
+          - "kubectl={{ target_k8s_version }}*"
+        state: present
+      retries: 3
+      delay: 5
+
+    - name: Restart kubelet
+      systemd:
+        name: kubelet
+        daemon_reload: yes
+        state: restarted
+
+    - name: Uncordon master node
+      shell: kubectl uncordon {{ inventory_hostname }}
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      delegate_to: "{{ groups['master'][0] }}"
+      when: inventory_hostname != groups['master'][0]
+
+    - name: Wait for master node to be ready
+      shell: kubectl get node {{ inventory_hostname }} --no-headers | awk '{print $2}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      delegate_to: "{{ groups['master'][0] }}"
+      register: node_status
+      until: node_status.stdout == "Ready"
+      retries: 30
+      delay: 10
+
+    - name: Verify master upgrade
+      shell: kubectl get nodes {{ inventory_hostname }} -o jsonpath='{.status.nodeInfo.kubeletVersion}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      delegate_to: "{{ groups['master'][0] }}"
+      register: master_version
+
+    - name: Display master upgrade status
+      debug:
+        msg: "Master {{ inventory_hostname }} upgraded to: {{ master_version.stdout }}"
+
+- name: Upgrade worker nodes
+  hosts: workers
+  become: true
+  serial: 1  # Upgrade workers one at a time for zero downtime
+  tasks:
+    - name: Drain worker node
+      shell: kubectl drain {{ inventory_hostname }} --ignore-daemonsets --delete-emptydir-data --force --timeout={{ drain_timeout }}
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      delegate_to: "{{ groups['master'][0] }}"
+
+    - name: Upgrade kubeadm on worker
+      apt:
+        name: "kubeadm={{ target_k8s_version }}*"
+        state: present
+        update_cache: yes
+      retries: 3
+      delay: 5
+
+    - name: Upgrade worker node configuration
+      shell: kubeadm upgrade node
+      timeout: "{{ upgrade_timeout }}"
+
+    - name: Upgrade kubelet on worker
+      apt:
+        name: "kubelet={{ target_k8s_version }}*"
+        state: present
+      retries: 3
+      delay: 5
+
+    - name: Restart kubelet on worker
+      systemd:
+        name: kubelet
+        daemon_reload: yes
+        state: restarted
+
+    - name: Uncordon worker node
+      shell: kubectl uncordon {{ inventory_hostname }}
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      delegate_to: "{{ groups['master'][0] }}"
+
+    - name: Wait for worker node to be ready
+      shell: kubectl get node {{ inventory_hostname }} --no-headers | awk '{print $2}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      delegate_to: "{{ groups['master'][0] }}"
+      register: node_status
+      until: node_status.stdout == "Ready"
+      retries: 30
+      delay: 10
+
+    - name: Verify worker upgrade
+      shell: kubectl get nodes {{ inventory_hostname }} -o jsonpath='{.status.nodeInfo.kubeletVersion}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      delegate_to: "{{ groups['master'][0] }}"
+      register: worker_version
+
+    - name: Display worker upgrade status
+      debug:
+        msg: "Worker {{ inventory_hostname }} upgraded to: {{ worker_version.stdout }}"
+
+    - name: Wait between worker upgrades
+      pause:
+        seconds: 30
+        prompt: "Waiting 30 seconds before upgrading next worker node..."
+
+- name: Upgrade CNI and system components
+  hosts: master
+  become: true
+  run_once: true
+  tasks:
+    - name: Upgrade Calico CNI
+      shell: |
+        kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/calico.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      retries: 3
+      delay: 10
+
+    - name: Wait for Calico pods to be ready
+      shell: kubectl get pods -n kube-system -l k8s-app=calico-node --no-headers | grep -v Running | wc -l
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: calico_pods
+      until: calico_pods.stdout == "0"
+      retries: 30
+      delay: 10
+
+    - name: Upgrade CoreDNS
+      shell: kubectl apply -f https://raw.githubusercontent.com/coredns/deployment/master/kubernetes/coredns.yaml.sed
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      ignore_errors: yes
+
+- name: Hold packages at new version
+  hosts: all
+  become: true
+  tasks:
+    - name: Hold Kubernetes packages at new version
+      dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - kubelet
+        - kubeadm
+        - kubectl
+
+- name: Verify upgrade completion
+  hosts: master
+  become: true
+  run_once: true
+  tasks:
+    - name: Get final cluster version
+      shell: kubectl version --output=yaml | grep gitVersion | head -1 | awk '{print $2}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: final_version
+
+    - name: Get all node versions
+      shell: kubectl get nodes -o custom-columns=NAME:.metadata.name,VERSION:.status.nodeInfo.kubeletVersion --no-headers
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: node_versions
+
+    - name: Display final cluster status
+      debug:
+        msg: |
+          🎉 KUBERNETES UPGRADE COMPLETED!
+          ================================
+          
+          Cluster Version: {{ final_version.stdout }}
+          Target Version:  v{{ target_k8s_version }}
+          
+          Node Versions:
+          {{ node_versions.stdout }}
+          
+          ✅ Upgrade successful!
+
+    - name: Verify all nodes are ready
+      shell: kubectl get nodes --no-headers | awk '{print $2}' | grep -v Ready | wc -l
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: not_ready_nodes
+      failed_when: not_ready_nodes.stdout != "0"
+
+    - name: Get cluster health
+      shell: kubectl get componentstatuses
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: cluster_health
+      ignore_errors: yes
+
+    - name: Display cluster health
+      debug:
+        var: cluster_health.stdout_lines
+      when: cluster_health.stdout is defined
+
+    - name: Create upgrade completion log
+      copy:
+        content: |
+          Kubernetes Upgrade Completed: {{ ansible_date_time.iso8601 }}
+          From: {{ current_version.stdout }}
+          To: {{ final_version.stdout }}
+          Status: SUCCESS
+          
+          Node Versions:
+          {{ node_versions.stdout }}
+        dest: /var/log/k8s-upgrade/upgrade-complete-{{ ansible_date_time.epoch }}.log
+
+    - name: Save upgrade summary
+      copy:
+        dest: /tmp/upgrade-summary.txt
+        content: |
+          🎉 Kubernetes Upgrade Summary
+          ============================
+          
+          Upgrade Date: {{ ansible_date_time.iso8601 }}
+          From Version: {{ current_version.stdout }}
+          To Version: {{ final_version.stdout }}
+          
+          Upgraded Nodes:
+          {{ node_versions.stdout }}
+          
+          Next Steps:
+          1. Test your applications
+          2. Update monitoring dashboards
+          3. Review deprecated APIs
+          4. Plan next upgrade (if needed)
+          
+          Rollback Information:
+          - etcd backup: /var/lib/etcd/backup-*.db
+          - Logs: /var/log/k8s-upgrade/
+      delegate_to: localhost 

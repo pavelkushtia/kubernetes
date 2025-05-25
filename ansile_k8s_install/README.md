@@ -426,3 +426,94 @@ ansible-playbook -i ha_inventory.ini production_addons.yaml
 ---
 
 **🎯 Ready for production Kubernetes deployment!** Your infrastructure will be enterprise-grade with monitoring, high availability, and zero single points of failure. 
+
+## **Playbook Overview**
+
+| Playbook | Purpose | Use Case | Safety Level |
+|----------|---------|----------|--------------|
+| `improved_k8s_cluster.yaml` | **Fresh Installation** | New cluster setup | 🛡️ Protected |
+| `production_addons.yaml` | **Add Components** | Install monitoring/ingress | ✅ Safe |
+| `k8s_upgrade.yaml` | **Version Upgrade** | Upgrade existing cluster | ⚠️ Requires care |
+| `ha_multi_master.yaml` | **HA Installation** | Multi-master setup | 🚨 Advanced |
+
+### **🚨 IMPORTANT: Playbook Usage**
+
+- **For NEW clusters**: Use `improved_k8s_cluster.yaml`
+- **For EXISTING clusters**: Use `production_addons.yaml` (adds components)
+- **For UPGRADES**: Use `k8s_upgrade.yaml` (version upgrades)
+- **For HA setup**: Use `ha_multi_master.yaml` (advanced users)
+
+**❌ DO NOT use `improved_k8s_cluster.yaml` on existing clusters - it will destroy them!**
+
+# 🔄 **KUBERNETES CLUSTER UPGRADES**
+
+## **Upgrade Your Existing Cluster**
+
+### **⚠️ Important Notes**
+- **Current playbooks are NOT for upgrades** - they're for fresh installations
+- **Use `k8s_upgrade.yaml` specifically for version upgrades**
+- **Always upgrade incrementally** (1.28 → 1.29 → 1.30, not 1.28 → 1.30)
+- **Test in development environment first**
+
+### **Pre-Upgrade Checklist**
+```bash
+# 1. Check current version
+kubectl version --short
+kubectl get nodes -o wide
+
+# 2. Verify cluster health
+kubectl get nodes
+kubectl get pods --all-namespaces
+
+# 3. Check upgrade path (only adjacent versions supported)
+# ✅ Valid: 1.28.x → 1.29.x
+# ❌ Invalid: 1.28.x → 1.30.x
+```
+
+### **Upgrade Process**
+
+#### **Step 1: Configure Target Version**
+Edit `k8s_upgrade.yaml`:
+```yaml
+vars:
+  current_k8s_version: "1.28.0"      # Your current version
+  target_k8s_version: "1.29.0"       # Target version
+  target_k8s_minor: "1.29"           # Target minor version
+  backup_enabled: true               # Create etcd backup
+```
+
+#### **Step 2: Run Upgrade**
+```bash
+# Standard upgrade with safety prompts
+ansible-playbook -i inventory.ini k8s_upgrade.yaml --ask-become-pass
+
+# Automated upgrade (no prompts)
+ansible-playbook -i inventory.ini k8s_upgrade.yaml --ask-become-pass -e auto_confirm=true
+```
+
+#### **Step 3: Verify Upgrade**
+```bash
+kubectl version
+kubectl get nodes -o wide
+kubectl get pods --all-namespaces
+```
+
+### **Upgrade Sequence**
+1. 💾 **Backup etcd** (automatic)
+2. 🔄 **Upgrade control plane** (masters one by one)
+3. 🔄 **Upgrade worker nodes** (rolling upgrade)
+4. 🌐 **Upgrade CNI and components**
+5. ✅ **Verify cluster health**
+
+### **Rollback (if needed)**
+```bash
+# Restore etcd backup
+sudo ETCDCTL_API=3 etcdctl snapshot restore /var/lib/etcd/backup-*.db
+
+# Downgrade packages
+sudo apt install kubelet=1.28.0-* kubeadm=1.28.0-* kubectl=1.28.0-*
+```
+
+**📖 For detailed upgrade instructions, see [UPGRADE_GUIDE.md](UPGRADE_GUIDE.md)**
+
+--- 

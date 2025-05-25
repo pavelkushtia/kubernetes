@@ -122,6 +122,25 @@ else
     print_status $RED "❌ production_addons.yaml not found"
 fi
 
+if [[ -f "k8s_upgrade.yaml" ]]; then
+    print_status $GREEN "✅ k8s_upgrade.yaml found"
+    
+    # Check for upgrade safety features
+    if grep -q "upgrade_confirmation" k8s_upgrade.yaml; then
+        print_status $GREEN "✅ Upgrade safety checks implemented"
+    else
+        print_status $YELLOW "⚠️  Upgrade safety checks may need review"
+    fi
+else
+    print_status $YELLOW "⚠️  k8s_upgrade.yaml not found (needed for version upgrades)"
+fi
+
+if [[ -f "ha_multi_master.yaml" ]]; then
+    print_status $GREEN "✅ ha_multi_master.yaml found"
+else
+    print_status $YELLOW "⚠️  ha_multi_master.yaml not found (optional for HA setup)"
+fi
+
 # Check inventory files
 echo ""
 print_status $BLUE "📝 Checking Inventory Files:"
@@ -167,6 +186,20 @@ echo "  - Safe to run on existing clusters"
 echo "  - Checks for existing installations"
 echo "  - Skips already installed components"
 echo "  - Command: ansible-playbook -i inventory.ini production_addons.yaml --ask-become-pass"
+
+echo ""
+print_status $GREEN "For CLUSTER UPGRADES (k8s_upgrade.yaml):"
+echo "  - Upgrades existing cluster to newer Kubernetes version"
+echo "  - Supports only adjacent version upgrades (1.28 → 1.29)"
+echo "  - Creates automatic etcd backups"
+echo "  - Command: ansible-playbook -i inventory.ini k8s_upgrade.yaml --ask-become-pass"
+
+echo ""
+print_status $GREEN "For HA SETUP (ha_multi_master.yaml):"
+echo "  - Advanced multi-master cluster setup"
+echo "  - Requires 3+ master nodes and load balancer"
+echo "  - For production high-availability deployments"
+echo "  - Command: ansible-playbook -i ha_inventory.ini ha_multi_master.yaml --ask-become-pass"
 
 echo ""
 print_status $BLUE "🔧 Current Cluster Status:"
