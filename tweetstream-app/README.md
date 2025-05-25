@@ -1,420 +1,323 @@
-# 🐦 TweetStream - Twitter Clone on Kubernetes
+# TweetStream - Twitter-like Social Media Platform
 
-A complete Twitter-like social media application designed for Kubernetes with comprehensive monitoring and high availability features.
+A production-ready, Twitter-like social media platform built for Kubernetes with comprehensive monitoring, high availability, and GitOps deployment using Helm and ArgoCD.
 
 ## 🏗️ Architecture Overview
 
-TweetStream is a modern, scalable social media platform that includes:
+TweetStream is a modern, cloud-native social media platform featuring:
 
-### Core Components
-- **PostgreSQL 15** - Primary database with Twitter-like schema
-- **Redis 7** - Caching layer and session management
-- **Apache Kafka 7.4.0** - Real-time message streaming
 - **Node.js API** - RESTful backend with Express.js
-- **NGINX Frontend** - Modern dark-themed UI
+- **NGINX Frontend** - Modern, responsive web interface
+- **PostgreSQL 15** - Primary database with Twitter-like schema
+- **Redis 7** - Caching and session management
+- **Apache Kafka** - Real-time tweet streaming (KRaft mode)
+- **Prometheus + Grafana** - Comprehensive monitoring and alerting
+- **ArgoCD** - GitOps continuous deployment
 
-### Monitoring Stack
-- **Prometheus** - Metrics collection and alerting
-- **Grafana** - Comprehensive dashboards
-- **Custom Exporters** - PostgreSQL, Redis, and Kafka metrics
-- **AlertManager** - Critical system alerts
-
-### High Availability Features
-- **Horizontal Pod Autoscaling** - Auto-scaling based on CPU/Memory
-- **Health Checks** - Liveness and readiness probes
-- **Resource Management** - Proper limits and requests
-- **Persistent Storage** - Database persistence with local-path
-
-## 📋 Prerequisites
-
-- Kubernetes cluster (v1.28+) with 3+ nodes
-- NGINX Ingress Controller installed
-- Prometheus and Grafana monitoring stack
-- `kubectl` configured to access your cluster
-- At least 4GB RAM and 2 CPU cores available
-
-## 🚀 Deployment Options
-
-### Option 1: GitOps with ArgoCD (Recommended for Production)
-
-ArgoCD provides continuous deployment, drift detection, and rollback capabilities.
-
-#### Benefits of ArgoCD:
-- ✅ **GitOps Workflow** - Declarative deployments from Git
-- ✅ **Automatic Synchronization** - Changes in Git automatically deployed
-- ✅ **Rollback Capabilities** - Easy rollbacks to previous versions
-- ✅ **Multi-environment Support** - Dev, staging, production
-- ✅ **Security** - RBAC and audit trails
-- ✅ **Drift Detection** - Alerts when cluster state differs from Git
-
-#### Setup ArgoCD:
-```bash
-# 1. Make the ArgoCD setup script executable
-chmod +x setup-argocd.sh
-
-# 2. Install and configure ArgoCD
-./setup-argocd.sh
-
-# 3. Create a Git repository and push your code
-git init
-git add .
-git commit -m "Initial TweetStream application"
-git remote add origin https://github.com/YOUR_USERNAME/kubernetes-tweetstream.git
-git push -u origin main
-
-# 4. Update the Git repository URL in tweetstream-argocd-app.yaml
-# Edit the repoURL field with your actual repository
-
-# 5. Deploy the ArgoCD application
-kubectl apply -f tweetstream-argocd-app.yaml
-```
-
-#### Access ArgoCD:
-- **ArgoCD UI**: http://argocd.192.168.1.82.nip.io:30080
-- **Username**: admin
-- **Password**: (provided by setup script)
-
-### Option 2: Direct Deployment (Good for Development/Testing)
-
-The deploy script is useful for quick testing and development environments.
-
-#### Benefits of Direct Deployment:
-- ✅ **Quick Setup** - Fast deployment for testing
-- ✅ **Simple** - No additional tools required
-- ✅ **Learning** - Good for understanding Kubernetes resources
-
-#### Limitations:
-- ❌ **No GitOps** - Manual deployment process
-- ❌ **No Drift Detection** - Manual monitoring required
-- ❌ **No Rollback** - Manual rollback process
-- ❌ **No Audit Trail** - Limited deployment history
-
-#### Quick Start:
-```bash
-# Make the deployment script executable
-chmod +x deploy.sh
-
-# Run the automated deployment
-./deploy.sh
-```
-
-## 🌐 Access URLs (After Deployment)
-- **TweetStream App**: http://tweetstream.192.168.1.82.nip.io:30080
-- **Grafana Dashboard**: http://grafana.192.168.1.82.nip.io:30080
-- **Prometheus**: http://prometheus.192.168.1.82.nip.io:30080
-- **ArgoCD UI**: http://argocd.192.168.1.82.nip.io:30080 (if using ArgoCD)
-
-## 📁 File Structure
+## 📁 Project Structure
 
 ```
 tweetstream-app/
-├── tweetstream-app.yaml         # Main application deployment
-├── monitoring-exporters.yaml    # PostgreSQL, Redis, Kafka exporters
-├── grafana-dashboard.yaml       # Custom Grafana dashboard
-├── deploy.sh                    # Direct deployment script
-├── setup-argocd.sh             # ArgoCD installation script
-├── argocd-setup.yaml           # ArgoCD installation manifests
-├── argocd-rbac.yaml            # ArgoCD RBAC configuration
-├── tweetstream-argocd-app.yaml # ArgoCD application definition
-└── README.md                   # This file
+├── helm-chart/                    # Helm chart for TweetStream
+│   └── tweetstream/
+│       ├── Chart.yaml             # Helm chart metadata
+│       ├── values.yaml            # Default configuration
+│       ├── values-dev.yaml        # Development environment
+│       ├── values-staging.yaml    # Staging environment
+│       ├── values-prod.yaml       # Production environment
+│       ├── templates/             # Kubernetes manifests
+│       │   ├── api/              # API service templates
+│       │   ├── frontend/         # Frontend service templates
+│       │   ├── database/         # PostgreSQL templates
+│       │   ├── redis/            # Redis templates
+│       │   ├── kafka/            # Kafka templates
+│       │   ├── monitoring/       # Monitoring templates
+│       │   ├── ingress/          # Ingress templates
+│       │   └── _helpers.tpl      # Template helpers
+│       ├── sql/                  # Database schema and sample data
+│       │   ├── 01-schema.sql     # Database schema
+│       │   └── 02-sample-data.sql # Sample data
+│       └── app-code/             # Application source code
+│           └── api/              # Node.js API source
+├── argocd-setup.yaml             # ArgoCD installation
+├── argocd-rbac.yaml              # ArgoCD RBAC configuration
+├── tweetstream-argocd-app.yaml   # ArgoCD application definitions
+├── setup-argocd.sh               # ArgoCD setup script
+├── deploy-helm.sh                # Helm deployment script
+└── README.md                     # This file
 ```
 
-## 🔄 GitOps Workflow with ArgoCD
+## 🚀 Quick Start
 
-### 1. Development Workflow
+### Prerequisites
+
+- Kubernetes cluster (1.24+)
+- Helm 3.8+
+- kubectl configured
+- NGINX Ingress Controller
+- Prometheus + Grafana (optional, for monitoring)
+
+### 1. Clone and Navigate
+
 ```bash
-# Make changes to your application
-vim tweetstream-app.yaml
-
-# Commit and push changes
-git add .
-git commit -m "Update API replicas to 5"
-git push origin main
-
-# ArgoCD automatically detects changes and syncs
-# Check ArgoCD UI for deployment status
+git clone https://github.com/pavelkushtia/kubernetes.git
+cd kubernetes/tweetstream-app
 ```
 
-### 2. Environment Management
-```bash
-# Create different branches for environments
-git checkout -b staging
-git checkout -b production
+### 2. Deploy with Helm
 
-# Use different ArgoCD applications for each environment
-# Point to different branches in tweetstream-argocd-app.yaml
+#### Development Environment
+```bash
+./deploy-helm.sh -e development
 ```
 
-### 3. Rollback Process
+#### Staging Environment
 ```bash
-# Via ArgoCD UI: Click "History and Rollback"
-# Via CLI:
-argocd app rollback tweetstream --revision 2
+./deploy-helm.sh -e staging
+```
+
+#### Production Environment
+```bash
+./deploy-helm.sh -e production
+```
+
+### 3. Access the Application
+
+After deployment, access TweetStream at:
+- **Development**: http://tweetstream-dev.192.168.1.82.nip.io
+- **Staging**: http://tweetstream-staging.192.168.1.82.nip.io
+- **Production**: http://tweetstream.192.168.1.82.nip.io
+
+## 🔧 Configuration
+
+### Environment-Specific Configurations
+
+| Environment | Replicas | Resources | Monitoring | Auto-scaling |
+|-------------|----------|-----------|------------|--------------|
+| Development | API: 1, Frontend: 1 | Minimal | Disabled | Disabled |
+| Staging | API: 2, Frontend: 2 | Moderate | Enabled | Enabled |
+| Production | API: 3, Frontend: 3 | Full | Enabled | Enabled |
+
+### Custom Values
+
+Create your own values file or override specific values:
+
+```bash
+# Using custom values file
+./deploy-helm.sh -e production -f my-values.yaml
+
+# Override specific values
+helm upgrade tweetstream ./helm-chart/tweetstream \
+  --set api.replicaCount=5 \
+  --set database.persistence.size=50Gi
+```
+
+## 🔄 GitOps with ArgoCD
+
+### Setup ArgoCD
+
+```bash
+# Install ArgoCD
+./setup-argocd.sh
+
+# Apply TweetStream application
+kubectl apply -f tweetstream-argocd-app.yaml
+```
+
+### ArgoCD Features
+
+- **Automated Sync** - Changes in Git automatically deployed
+- **Drift Detection** - Alerts when cluster state differs from Git
+- **Easy Rollbacks** - One-click rollback to previous versions
+- **Multi-environment** - Separate applications for dev/staging/prod
+
+### Access ArgoCD
+
+```bash
+# Get admin password
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+
+# Port forward to access UI
+kubectl port-forward svc/argocd-server -n argocd 8080:443
+
+# Access at: https://localhost:8080
+# Username: admin
+# Password: (from above command)
+```
+
+## 📊 Monitoring & Observability
+
+### Grafana Dashboard
+
+TweetStream includes a comprehensive Grafana dashboard with:
+
+- **Application Metrics**: Active users, tweets, likes
+- **Performance Metrics**: API response times, request rates
+- **Infrastructure Metrics**: CPU, memory, network I/O
+- **Database Metrics**: Connection pools, query performance
+- **Cache Metrics**: Redis hit rates, memory usage
+- **Message Queue**: Kafka throughput and lag
+
+### Prometheus Alerts
+
+Pre-configured alerts for:
+- API service down or high error rate
+- Database connection issues
+- High resource usage
+- Kafka message lag
+
+### Access Monitoring
+
+```bash
+# Port forward to Grafana
+kubectl port-forward svc/grafana -n monitoring 3000:80
+
+# Access at: http://localhost:3000
+# Default credentials: admin/admin
 ```
 
 ## 🗄️ Database Schema
 
-### Users Table
-- User profiles with followers/following counts
-- Authentication and bio information
-- Tweet statistics tracking
+TweetStream uses a Twitter-like database schema:
 
-### Tweets Table
-- Tweet content with engagement metrics
-- Reply threading support
-- Timestamp tracking
+- **users** - User profiles and authentication
+- **tweets** - Tweet content and metadata
+- **follows** - User relationships
+- **likes** - Tweet engagement
+- **notifications** - User notifications
+- **user_sessions** - Session management
 
-### Relationships
-- Follows table for user connections
-- Likes table for tweet interactions
-- Proper indexing for performance
+Sample data is automatically loaded for development and testing.
 
-## 🔧 Manual Deployment
+## 🔧 Development
 
-If you prefer manual deployment:
+### Local Development
 
 ```bash
-# Deploy main application
-kubectl apply -f tweetstream-app.yaml
+# Deploy development environment
+./deploy-helm.sh -e development
 
-# Deploy monitoring exporters
-kubectl apply -f monitoring-exporters.yaml
-
-# Deploy Grafana dashboard
-kubectl apply -f grafana-dashboard.yaml
+# Port forward for local access
+kubectl port-forward svc/tweetstream-api -n tweetstream 3000:3000
+kubectl port-forward svc/tweetstream-frontend -n tweetstream 8080:80
 ```
 
-## 📊 Monitoring Features
+### API Endpoints
 
-### Custom Metrics
-- `tweetstream_active_users_total` - Active user count
-- `tweetstream_tweets_total` - Total tweets created
-- `tweetstream_likes_total` - Total likes given
-- `http_request_duration_seconds` - API response times
+- `GET /api` - API documentation
+- `GET /health` - Health check
+- `GET /metrics` - Prometheus metrics
+- `POST /api/auth/register` - User registration
+- `POST /api/auth/login` - User login
+- `GET /api/tweets` - Get tweet feed
+- `POST /api/tweets` - Create tweet
 
-### Grafana Dashboard Panels
-1. **Application Overview** - Key statistics
-2. **Tweet Activity** - Real-time tweet/like rates
-3. **Active Users Trend** - User engagement over time
-4. **API Performance** - Response time percentiles
-5. **HTTP Request Rates** - Traffic patterns
-6. **Resource Usage** - CPU/Memory consumption
-7. **Database Metrics** - Connection and query stats
-8. **Cache Performance** - Redis hit/miss rates
-9. **Message Throughput** - Kafka metrics
-10. **Network I/O** - Traffic monitoring
-11. **Pod Health** - Container status
-12. **System Alerts** - Critical notifications
-
-### Alerting Rules
-- API service down
-- High response times (>2s)
-- High error rates (>5%)
-- Database connectivity issues
-- Redis/Kafka service failures
-- High resource usage (>80%)
-
-## 🔍 Troubleshooting
-
-### ArgoCD Issues
-```bash
-# Check ArgoCD pods
-kubectl get pods -n argocd
-
-# Check ArgoCD applications
-kubectl get applications -n argocd
-
-# View ArgoCD application details
-kubectl describe application tweetstream -n argocd
-
-# Check ArgoCD logs
-kubectl logs -f deployment/argocd-server -n argocd
-```
-
-### Application Issues
-```bash
-# Check pod status
-kubectl get pods -n tweetstream
-
-# View logs
-kubectl logs -f deployment/tweetstream-api -n tweetstream
-
-# Port forward for debugging
-kubectl port-forward svc/tweetstream-frontend 8080:80 -n tweetstream
-```
-
-### Scale Services
-```bash
-# Scale API replicas
-kubectl scale deployment tweetstream-api --replicas=5 -n tweetstream
-
-# Scale frontend replicas
-kubectl scale deployment tweetstream-frontend --replicas=3 -n tweetstream
-```
-
-## 🧪 Testing the Application
-
-### 1. Create Sample Tweets
-- Access the web interface
-- Select a user from the dropdown
-- Post tweets and interact with existing content
-
-### 2. Load Testing
-```bash
-# Generate API load
-kubectl run load-test --image=busybox --rm -it --restart=Never -- \
-  sh -c 'while true; do wget -q -O- http://tweetstream-api:3000/api/tweets; sleep 1; done'
-```
-
-### 3. Monitor Auto-scaling
-```bash
-# Watch HPA status
-kubectl get hpa -n tweetstream -w
-
-# Monitor pod scaling
-kubectl get pods -n tweetstream -w
-```
-
-## 🔧 Configuration
-
-### Environment Variables
-The API supports these environment variables:
-- `NODE_ENV` - Runtime environment (production/development)
-- `DB_HOST` - PostgreSQL host (default: postgres-primary)
-- `REDIS_HOST` - Redis host (default: redis)
-- `KAFKA_BROKERS` - Kafka broker list (default: kafka:9092)
-
-### Resource Limits
-Current resource allocations:
-- **PostgreSQL**: 256Mi-512Mi RAM, 250m-500m CPU
-- **Redis**: 128Mi-256Mi RAM, 100m-200m CPU
-- **Kafka**: 512Mi-1Gi RAM, 500m-1000m CPU
-- **API**: 256Mi-512Mi RAM, 250m-500m CPU
-- **Frontend**: 64Mi-128Mi RAM, 50m-100m CPU
-
-## 🔒 Security Features
-
-- **Helmet.js** - Security headers
-- **Rate Limiting** - 100 requests per 15 minutes per IP
-- **CORS** - Cross-origin request handling
-- **Input Validation** - SQL injection prevention
-- **Health Checks** - Service availability monitoring
-
-## 🚀 Performance Optimizations
-
-- **Redis Caching** - 60-second tweet cache
-- **Database Indexing** - Optimized queries
-- **Connection Pooling** - PostgreSQL connection management
-- **GZIP Compression** - Frontend asset compression
-- **CDN Ready** - Static asset optimization
-
-## 📈 Scaling Guidelines
-
-### Horizontal Scaling
-- **API**: 3-10 replicas based on CPU (70%) and Memory (80%)
-- **Frontend**: 2-5 replicas based on CPU (70%)
-- **Database**: Single instance with persistent storage
-- **Cache/Message Queue**: Single instance for development
-
-### Vertical Scaling
-Increase resource limits in the YAML files:
-```yaml
-resources:
-  limits:
-    memory: "1Gi"    # Increase from 512Mi
-    cpu: "1000m"     # Increase from 500m
-```
-
-## 🛠️ Development
-
-### Local Development Setup
-```bash
-# Port forward services
-kubectl port-forward svc/postgres-primary 5432:5432 -n tweetstream &
-kubectl port-forward svc/redis 6379:6379 -n tweetstream &
-kubectl port-forward svc/kafka 9092:9092 -n tweetstream &
-
-# Run API locally
-cd api/
-npm install
-npm start
-```
-
-### Database Access
-```bash
-# Connect to PostgreSQL
-kubectl exec -it statefulset/postgres-primary -n tweetstream -- \
-  psql -U tweetuser -d tweetstream
-
-# Connect to Redis
-kubectl exec -it deployment/redis -n tweetstream -- redis-cli
-```
-
-## 🔄 Backup and Recovery
-
-### Database Backup
-```bash
-# Create backup
-kubectl exec statefulset/postgres-primary -n tweetstream -- \
-  pg_dump -U tweetuser tweetstream > tweetstream-backup.sql
-
-# Restore backup
-kubectl exec -i statefulset/postgres-primary -n tweetstream -- \
-  psql -U tweetuser tweetstream < tweetstream-backup.sql
-```
-
-## 📞 Support
-
-### Common Issues
-1. **Pods not starting** - Check resource availability
-2. **Database connection errors** - Verify PostgreSQL is running
-3. **API timeouts** - Check network policies and service discovery
-4. **Monitoring not working** - Ensure ServiceMonitors are created
-5. **ArgoCD sync issues** - Check Git repository access and YAML syntax
+## 🛠️ Operations
 
 ### Useful Commands
+
 ```bash
-# Check cluster resources
-kubectl top nodes
-kubectl top pods -n tweetstream
+# Check deployment status
+kubectl get pods -n tweetstream
 
-# Describe problematic pods
-kubectl describe pod <pod-name> -n tweetstream
+# View API logs
+kubectl logs -n tweetstream -l component=api -f
 
-# Check events
-kubectl get events -n tweetstream --sort-by='.lastTimestamp'
+# View frontend logs
+kubectl logs -n tweetstream -l component=frontend -f
 
-# ArgoCD CLI commands
-argocd app list
-argocd app sync tweetstream
-argocd app history tweetstream
+# Scale API replicas
+kubectl scale deployment tweetstream-api -n tweetstream --replicas=5
+
+# Check Helm releases
+helm list -n tweetstream
+
+# Upgrade deployment
+./deploy-helm.sh --upgrade -e production
+
+# Uninstall
+helm uninstall tweetstream -n tweetstream
 ```
 
-## 📄 License
+### Troubleshooting
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+#### Common Issues
+
+1. **Pods not starting**: Check resource limits and node capacity
+2. **Database connection errors**: Verify PostgreSQL pod is running
+3. **Ingress not working**: Ensure NGINX Ingress Controller is installed
+4. **Kafka issues**: Check KRaft configuration and storage
+
+#### Debug Commands
+
+```bash
+# Check pod events
+kubectl describe pod <pod-name> -n tweetstream
+
+# Check service endpoints
+kubectl get endpoints -n tweetstream
+
+# Check ingress status
+kubectl describe ingress -n tweetstream
+
+# Check persistent volumes
+kubectl get pv,pvc -n tweetstream
+```
+
+## 🔒 Security
+
+### Production Security Features
+
+- **Pod Security Context** - Non-root user execution
+- **Security Context** - Dropped capabilities
+- **Network Policies** - Traffic isolation (production only)
+- **Resource Limits** - Prevent resource exhaustion
+- **Health Checks** - Liveness and readiness probes
+
+### Secrets Management
+
+Sensitive data is stored in Kubernetes secrets:
+- Database passwords
+- JWT secrets
+- API keys
+
+## 📈 Scaling
+
+### Horizontal Pod Autoscaling
+
+TweetStream automatically scales based on:
+- CPU utilization (70% threshold)
+- Memory utilization (80% threshold)
+
+### Manual Scaling
+
+```bash
+# Scale API
+kubectl scale deployment tweetstream-api --replicas=10
+
+# Scale frontend
+kubectl scale deployment tweetstream-frontend --replicas=5
+```
 
 ## 🤝 Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Test thoroughly
+4. Test with development environment
 5. Submit a pull request
 
-## 🎯 Roadmap
+## 📄 License
 
-- [ ] User authentication and authorization
-- [ ] Real-time notifications via WebSockets
-- [ ] Image upload and media support
-- [ ] Advanced search functionality
-- [ ] Mobile-responsive improvements
-- [ ] Multi-language support
-- [ ] Advanced analytics dashboard
-- [ ] Multi-cluster ArgoCD setup
-- [ ] Helm chart packaging
-- [ ] Kustomize overlays for environments
+This project is licensed under the MIT License - see the [LICENSE](../LICENSE) file for details.
+
+## 🆘 Support
+
+For support and questions:
+- Create an issue in the GitHub repository
+- Check the troubleshooting section above
+- Review Kubernetes and Helm documentation
 
 ---
 
-**TweetStream** - A production-ready Twitter clone for Kubernetes with GitOps! 🚀 
+**TweetStream** - Built with ❤️ for the cloud-native community 

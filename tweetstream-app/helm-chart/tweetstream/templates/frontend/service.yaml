@@ -1,0 +1,24 @@
+{{- if .Values.frontend.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.frontend.name }}
+  namespace: {{ include "tweetstream.namespace" . }}
+  labels:
+    {{- include "tweetstream.labels" . | nindent 4 }}
+    component: frontend
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.frontend.service.type }}
+  ports:
+  - port: {{ .Values.frontend.service.port }}
+    targetPort: {{ .Values.frontend.service.targetPort }}
+    protocol: TCP
+    name: http
+  selector:
+    {{- include "tweetstream.selectorLabels" . | nindent 4 }}
+    component: frontend
+{{- end }} 

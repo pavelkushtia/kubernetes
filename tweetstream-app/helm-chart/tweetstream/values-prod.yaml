@@ -1,0 +1,153 @@
+# TweetStream Production Environment Values
+# Full resources and high availability for production
+
+# Global settings
+global:
+  environment: production
+  imageRegistry: ""
+  storageClass: "local-path"
+
+# API Service - Full production setup
+api:
+  enabled: true
+  replicaCount: 3
+  
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "300m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+
+# Frontend - Production setup
+frontend:
+  enabled: true
+  replicaCount: 3
+  
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+  
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+
+# Database - Production setup
+database:
+  enabled: true
+  
+  persistence:
+    size: "20Gi"
+  
+  resources:
+    requests:
+      memory: "1Gi"
+      cpu: "200m"
+    limits:
+      memory: "2Gi"
+      cpu: "500m"
+
+# Redis - Production setup
+redis:
+  enabled: true
+  
+  persistence:
+    size: "5Gi"
+  
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "200m"
+    limits:
+      memory: "512Mi"
+      cpu: "400m"
+
+# Kafka - Production setup
+kafka:
+  enabled: true
+  replicaCount: 3  # Multiple replicas for HA
+  
+  persistence:
+    size: "10Gi"
+  
+  resources:
+    requests:
+      memory: "1Gi"
+      cpu: "500m"
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+
+# Monitoring - Full monitoring for production
+monitoring:
+  enabled: true
+  
+  serviceMonitor:
+    enabled: true
+    interval: 15s  # More frequent monitoring
+  
+  grafanaDashboard:
+    enabled: true
+  
+  prometheusRules:
+    enabled: true
+
+# Ingress - Production domain
+ingress:
+  enabled: true
+  hosts:
+    - host: tweetstream.192.168.1.82.nip.io
+      paths:
+        - path: /
+          pathType: Prefix
+          service: frontend
+        - path: /api
+          pathType: Prefix
+          service: api
+
+# Security - Enhanced for production
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+  runAsUser: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# Network Policies - Enable for production
+networkPolicy:
+  enabled: true
+
+# Node affinity for better distribution
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - tweetstream
+        topologyKey: kubernetes.io/hostname 

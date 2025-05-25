@@ -1,0 +1,20 @@
+{{- if .Values.redis.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.redis.name }}
+  namespace: {{ include "tweetstream.namespace" . }}
+  labels:
+    {{- include "tweetstream.labels" . | nindent 4 }}
+    component: redis
+spec:
+  type: {{ .Values.redis.service.type | default "ClusterIP" }}
+  ports:
+  - port: {{ .Values.redis.service.port }}
+    targetPort: redis
+    protocol: TCP
+    name: redis
+  selector:
+    {{- include "tweetstream.selectorLabels" . | nindent 4 }}
+    component: redis
+{{- end }} 

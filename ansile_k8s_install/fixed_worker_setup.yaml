@@ -1,0 +1,144 @@
+---
+# COMPLETE Worker Node Setup Playbook
+# This playbook properly installs containerd and Kubernetes on new worker nodes
+# Fixes the missing Docker repository issue
+
+- name: Setup new worker nodes for Kubernetes
+  hosts: sanzad-ubuntu-21,sanzad-ubuntu-22,sanzad-ubuntu-23
+  become: true
+  vars:
+    k8s_version: "1.28.0"
+  
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install prerequisite packages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+
+    # DOCKER REPOSITORY SETUP (This was missing!)
+    - name: Create keyrings directory
+      file:
+        path: /usr/share/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Add Docker GPG key
+      get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /tmp/docker-key
+        mode: '0644'
+
+    - name: Add Docker GPG key to keyring
+      shell: cat /tmp/docker-key | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+        filename: docker
+        update_cache: yes
+
+    # KUBERNETES REPOSITORY SETUP
+    - name: Create apt keyrings directory
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Add Kubernetes GPG key
+      get_url:
+        url: https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key
+        dest: /tmp/k8s-key
+        mode: '0644'
+
+    - name: Add Kubernetes GPG key to keyring
+      shell: cat /tmp/k8s-key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Add Kubernetes repository
+      apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /"
+        state: present
+        filename: kubernetes
+        update_cache: yes
+
+    # INSTALL CONTAINERD (Now it will work!)
+    - name: Install containerd
+      apt:
+        name: containerd.io
+        state: present
+        update_cache: yes
+
+    - name: Create containerd config directory
+      file:
+        path: /etc/containerd
+        state: directory
+        mode: '0755'
+
+    - name: Generate containerd configuration
+      shell: containerd config default > /etc/containerd/config.toml
+
+    - name: Configure containerd to use systemd cgroup driver
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+
+    - name: Restart and enable containerd
+      systemd:
+        name: containerd
+        state: restarted
+        enabled: yes
+
+    # INSTALL KUBERNETES COMPONENTS
+    - name: Install Kubernetes components
+      apt:
+        name:
+          - "kubelet={{ k8s_version }}-1.1"
+          - "kubeadm={{ k8s_version }}-1.1"
+          - "kubectl={{ k8s_version }}-1.1"
+        state: present
+
+    - name: Hold Kubernetes packages
+      dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - kubelet
+        - kubeadm
+        - kubectl
+
+    - name: Enable kubelet
+      systemd:
+        name: kubelet
+        enabled: yes
+
+    - name: Show completion message
+      debug:
+        msg: "✅ {{ inventory_hostname }} is ready to join the cluster!"
+
+- name: Join nodes to cluster
+  hosts: sanzad-ubuntu-21,sanzad-ubuntu-22,sanzad-ubuntu-23
+  become: true
+  tasks:
+    - name: Get join command from master
+      shell: kubeadm token create --print-join-command
+      register: join_command
+      delegate_to: master-node
+      run_once: true
+
+    - name: Join worker node to cluster
+      shell: "{{ join_command.stdout }}"
+      
+    - name: Show join status
+      debug:
+        msg: "✅ {{ inventory_hostname }} joined the cluster successfully!" 

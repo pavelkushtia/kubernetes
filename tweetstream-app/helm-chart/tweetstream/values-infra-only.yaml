@@ -1,0 +1,135 @@
+# TweetStream Infrastructure-Only Values
+# This file deploys only the infrastructure components (DB, Redis, Kafka)
+# without the application containers that require Docker images
+
+# Global settings
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# Application metadata
+nameOverride: ""
+fullnameOverride: ""
+namespaceOverride: ""
+
+# Service Account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# API Configuration - DISABLED for now
+api:
+  enabled: false
+
+# Frontend Configuration - DISABLED for now
+frontend:
+  enabled: false
+
+# Database Configuration (PostgreSQL)
+database:
+  enabled: true
+  name: postgres-primary
+  
+  image:
+    repository: postgres
+    tag: "15-alpine"
+    pullPolicy: IfNotPresent
+  
+  auth:
+    database: tweetstream
+    username: tweetuser
+    password: tweetpass123
+  
+  service:
+    type: ClusterIP
+    port: 5432
+  
+  persistence:
+    enabled: true
+    storageClass: "local-path"
+    size: 10Gi
+  
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+
+# Redis Configuration
+redis:
+  enabled: true
+  name: redis
+  
+  image:
+    repository: redis
+    tag: "7-alpine"
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 6379
+  
+  persistence:
+    enabled: false
+    storageClass: "local-path"
+    size: 1Gi
+  
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# Kafka Configuration - DISABLED for now
+kafka:
+  enabled: false
+
+# Monitoring Configuration - DISABLED for now
+monitoring:
+  enabled: false
+
+# Ingress Configuration - DISABLED for now
+ingress:
+  enabled: false
+
+# Security Configuration
+security:
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    fsGroup: 1001
+  
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: false
+    runAsNonRoot: true
+    runAsUser: 1001
+
+# Network Policies
+networkPolicy:
+  enabled: false
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: false
+
+# Node Affinity and Tolerations
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Additional labels and annotations
+commonLabels: {}
+commonAnnotations: {}
+
+# Secrets
+secrets:
+  jwtSecret: "your-super-secret-jwt-key-change-this-in-production" 

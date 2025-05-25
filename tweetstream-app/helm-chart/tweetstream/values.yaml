@@ -1,0 +1,338 @@
+# TweetStream Helm Chart Values
+# This file contains the default configuration values for TweetStream
+
+# Global settings
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# Application metadata
+nameOverride: ""
+fullnameOverride: ""
+namespaceOverride: ""
+
+# Service Account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# API Configuration
+api:
+  enabled: true
+  name: tweetstream-api
+  replicaCount: 3
+  
+  image:
+    repository: tweetstream/api
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+  
+  env:
+    NODE_ENV: production
+    PORT: "3000"
+  
+  service:
+    type: ClusterIP
+    port: 3000
+    targetPort: 3000
+  
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 200m
+      memory: 256Mi
+  
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 3000
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 3000
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# Frontend Configuration
+frontend:
+  enabled: true
+  name: tweetstream-frontend
+  replicaCount: 2
+  
+  image:
+    repository: tweetstream/frontend
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 80
+  
+  resources:
+    limits:
+      cpu: 200m
+      memory: 128Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
+  
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+  
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 80
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 80
+    initialDelaySeconds: 5
+    periodSeconds: 5
+
+# Database Configuration (PostgreSQL)
+database:
+  enabled: true
+  name: postgres-primary
+  
+  image:
+    repository: postgres
+    tag: "15-alpine"
+    pullPolicy: IfNotPresent
+  
+  auth:
+    database: tweetstream
+    username: tweetuser
+    password: tweetpass123
+  
+  service:
+    type: ClusterIP
+    port: 5432
+  
+  persistence:
+    enabled: true
+    storageClass: "local-path"
+    size: 10Gi
+  
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+
+# External Database (if database.enabled is false)
+externalDatabase:
+  url: ""
+
+# Redis Configuration
+redis:
+  enabled: true
+  name: redis
+  
+  image:
+    repository: redis
+    tag: "7-alpine"
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 6379
+  
+  persistence:
+    enabled: false
+    storageClass: "local-path"
+    size: 1Gi
+  
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# External Redis (if redis.enabled is false)
+externalRedis:
+  url: ""
+
+# Kafka Configuration
+kafka:
+  enabled: true
+  name: kafka
+  
+  image:
+    repository: confluentinc/cp-kafka
+    tag: "7.4.0"
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 9092
+    controllerPort: 9093
+  
+  persistence:
+    enabled: true
+    storageClass: "local-path"
+    size: 5Gi
+  
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+
+# External Kafka (if kafka.enabled is false)
+externalKafka:
+  url: ""
+
+# Monitoring Configuration
+monitoring:
+  enabled: true
+  
+  # PostgreSQL Exporter
+  postgresExporter:
+    enabled: true
+    image:
+      repository: prometheuscommunity/postgres-exporter
+      tag: "v0.13.2"
+    resources:
+      limits:
+        cpu: 100m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+  
+  # Redis Exporter
+  redisExporter:
+    enabled: true
+    image:
+      repository: oliver006/redis_exporter
+      tag: "v1.52.0"
+    resources:
+      limits:
+        cpu: 100m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+  
+  # Kafka Exporter
+  kafkaExporter:
+    enabled: true
+    image:
+      repository: danielqsj/kafka-exporter
+      tag: "v1.6.0"
+    resources:
+      limits:
+        cpu: 100m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+
+# Ingress Configuration
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+  hosts:
+    - host: tweetstream.192.168.1.82.nip.io
+      paths:
+        - path: /
+          pathType: Prefix
+          service:
+            name: tweetstream-frontend
+            port: 80
+        - path: /api
+          pathType: Prefix
+          service:
+            name: tweetstream-api
+            port: 3000
+  tls: []
+
+# Security Configuration
+security:
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    fsGroup: 1001
+  
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: false
+    runAsNonRoot: true
+    runAsUser: 1001
+
+# Network Policies
+networkPolicy:
+  enabled: false
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Node Affinity and Tolerations
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Additional labels and annotations
+commonLabels: {}
+commonAnnotations: {}
+
+# Init containers
+initContainers: []
+
+# Sidecar containers
+sidecars: []
+
+# Extra volumes
+extraVolumes: []
+
+# Extra volume mounts
+extraVolumeMounts: []
+
+# Environment variables from secrets/configmaps
+envFrom: []
+
+# Additional environment variables
+extraEnvVars: []
+
+# Secrets
+secrets:
+  jwtSecret: "your-super-secret-jwt-key-change-this-in-production" 
