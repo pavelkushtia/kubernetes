@@ -1,0 +1,455 @@
+---
+# Production Kubernetes Addons Playbook
+# Installs monitoring stack, ingress controller, and essential tools
+
+- name: Install Helm package manager
+  hosts: master
+  become: true
+  vars:
+    helm_version: "3.13.0"
+  tasks:
+    - name: Download Helm installation script
+      get_url:
+        url: https://get.helm.sh/helm-v{{ helm_version }}-linux-amd64.tar.gz
+        dest: /tmp/helm.tar.gz
+        mode: '0644'
+      retries: 3
+      delay: 5
+
+    - name: Extract Helm binary
+      unarchive:
+        src: /tmp/helm.tar.gz
+        dest: /tmp
+        remote_src: yes
+        creates: /tmp/linux-amd64/helm
+
+    - name: Install Helm binary
+      copy:
+        src: /tmp/linux-amd64/helm
+        dest: /usr/local/bin/helm
+        mode: '0755'
+        remote_src: yes
+
+    - name: Verify Helm installation
+      shell: helm version --short
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: helm_version_output
+
+    - name: Display Helm version
+      debug:
+        var: helm_version_output.stdout
+
+    - name: Add essential Helm repositories
+      shell: |
+        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+        helm repo add grafana https://grafana.github.io/helm-charts
+        helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+        helm repo add traefik https://traefik.github.io/charts
+        helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+        helm repo update
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      retries: 3
+      delay: 5
+
+- name: Install Metrics Server
+  hosts: master
+  become: true
+  tasks:
+    - name: Install metrics-server using Helm
+      shell: |
+        helm upgrade --install metrics-server metrics-server/metrics-server \
+          --namespace kube-system \
+          --set args="{--kubelet-insecure-tls}"
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      retries: 3
+      delay: 10
+
+    - name: Wait for metrics-server to be ready
+      shell: kubectl get deployment metrics-server -n kube-system -o jsonpath='{.status.readyReplicas}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: metrics_ready
+      until: metrics_ready.stdout == "1"
+      retries: 20
+      delay: 15
+
+- name: Install NGINX Ingress Controller
+  hosts: master
+  become: true
+  vars:
+    ingress_controller: "nginx"  # Options: nginx, traefik
+  tasks:
+    - name: Create ingress-nginx namespace
+      shell: kubectl create namespace ingress-nginx --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Install NGINX Ingress Controller
+      shell: |
+        helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+          --namespace ingress-nginx \
+          --set controller.service.type=NodePort \
+          --set controller.service.nodePorts.http=30080 \
+          --set controller.service.nodePorts.https=30443 \
+          --set controller.metrics.enabled=true \
+          --set controller.podAnnotations."prometheus\.io/scrape"="true" \
+          --set controller.podAnnotations."prometheus\.io/port"="10254"
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: ingress_controller == "nginx"
+      retries: 3
+      delay: 10
+
+    - name: Wait for NGINX Ingress Controller to be ready
+      shell: kubectl get deployment ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.readyReplicas}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: ingress_ready
+      until: ingress_ready.stdout == "1"
+      retries: 30
+      delay: 10
+      when: ingress_controller == "nginx"
+
+    - name: Get NGINX Ingress Controller service info
+      shell: kubectl get svc ingress-nginx-controller -n ingress-nginx
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: ingress_service
+      when: ingress_controller == "nginx"
+
+    - name: Display Ingress Controller info
+      debug:
+        var: ingress_service.stdout_lines
+      when: ingress_controller == "nginx"
+
+- name: Install Traefik Ingress Controller (Alternative)
+  hosts: master
+  become: true
+  vars:
+    ingress_controller: "nginx"  # Change to "traefik" to use Traefik instead
+  tasks:
+    - name: Create traefik namespace
+      shell: kubectl create namespace traefik --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: ingress_controller == "traefik"
+
+    - name: Install Traefik Ingress Controller
+      shell: |
+        helm upgrade --install traefik traefik/traefik \
+          --namespace traefik \
+          --set service.type=NodePort \
+          --set ports.web.nodePort=30080 \
+          --set ports.websecure.nodePort=30443 \
+          --set dashboard.enabled=true \
+          --set dashboard.domain=traefik.local
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: ingress_controller == "traefik"
+      retries: 3
+      delay: 10
+
+- name: Install Prometheus Monitoring Stack
+  hosts: master
+  become: true
+  vars:
+    monitoring_namespace: "monitoring"
+    grafana_admin_password: "admin123"  # Change this in production!
+  tasks:
+    - name: Create monitoring namespace
+      shell: kubectl create namespace {{ monitoring_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Create Prometheus values file
+      copy:
+        dest: /tmp/prometheus-values.yaml
+        content: |
+          prometheus:
+            prometheusSpec:
+              retention: 15d
+              storageSpec:
+                volumeClaimTemplate:
+                  spec:
+                    storageClassName: local-path
+                    accessModes: ["ReadWriteOnce"]
+                    resources:
+                      requests:
+                        storage: 10Gi
+              nodeSelector:
+                kubernetes.io/os: linux
+            ingress:
+              enabled: true
+              ingressClassName: nginx
+              hosts:
+                - prometheus.local
+              paths:
+                - /
+          
+          grafana:
+            adminPassword: {{ grafana_admin_password }}
+            persistence:
+              enabled: true
+              storageClassName: local-path
+              size: 5Gi
+            ingress:
+              enabled: true
+              ingressClassName: nginx
+              hosts:
+                - grafana.local
+              path: /
+            nodeSelector:
+              kubernetes.io/os: linux
+          
+          alertmanager:
+            alertmanagerSpec:
+              nodeSelector:
+                kubernetes.io/os: linux
+              storage:
+                volumeClaimTemplate:
+                  spec:
+                    storageClassName: local-path
+                    accessModes: ["ReadWriteOnce"]
+                    resources:
+                      requests:
+                        storage: 2Gi
+            ingress:
+              enabled: true
+              ingressClassName: nginx
+              hosts:
+                - alertmanager.local
+              paths:
+                - /
+          
+          nodeExporter:
+            enabled: true
+          
+          kubeStateMetrics:
+            enabled: true
+          
+          defaultRules:
+            create: true
+            rules:
+              alertmanager: true
+              etcd: true
+              general: true
+              k8s: true
+              kubeApiserver: true
+              kubePrometheusNodeRecording: true
+              kubernetesApps: true
+              kubernetesResources: true
+              kubernetesStorage: true
+              kubernetesSystem: true
+              node: true
+              prometheus: true
+
+    - name: Install kube-prometheus-stack
+      shell: |
+        helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+          --namespace {{ monitoring_namespace }} \
+          --values /tmp/prometheus-values.yaml \
+          --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+          --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
+          --timeout 10m
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      retries: 2
+      delay: 30
+
+    - name: Wait for Prometheus to be ready
+      shell: kubectl get statefulset prometheus-prometheus-kube-prometheus-prometheus -n {{ monitoring_namespace }} -o jsonpath='{.status.readyReplicas}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: prometheus_ready
+      until: prometheus_ready.stdout == "1"
+      retries: 30
+      delay: 20
+
+    - name: Wait for Grafana to be ready
+      shell: kubectl get deployment prometheus-grafana -n {{ monitoring_namespace }} -o jsonpath='{.status.readyReplicas}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: grafana_ready
+      until: grafana_ready.stdout == "1"
+      retries: 30
+      delay: 20
+
+- name: Install Local Path Provisioner for Storage
+  hosts: master
+  become: true
+  tasks:
+    - name: Install local-path-provisioner
+      shell: |
+        kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.24/deploy/local-path-storage.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      retries: 3
+      delay: 5
+
+    - name: Set local-path as default storage class
+      shell: |
+        kubectl patch storageclass local-path -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: Configure Ingress for Monitoring Services
+  hosts: master
+  become: true
+  tasks:
+    - name: Create monitoring ingress manifest
+      copy:
+        dest: /tmp/monitoring-ingress.yaml
+        content: |
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: monitoring-ingress
+            namespace: monitoring
+            annotations:
+              nginx.ingress.kubernetes.io/rewrite-target: /
+          spec:
+            ingressClassName: nginx
+            rules:
+            - host: prometheus.{{ ansible_default_ipv4.address }}.nip.io
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: prometheus-kube-prometheus-prometheus
+                      port:
+                        number: 9090
+            - host: grafana.{{ ansible_default_ipv4.address }}.nip.io
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: prometheus-grafana
+                      port:
+                        number: 80
+            - host: alertmanager.{{ ansible_default_ipv4.address }}.nip.io
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: prometheus-kube-prometheus-alertmanager
+                      port:
+                        number: 9093
+
+    - name: Apply monitoring ingress
+      shell: kubectl apply -f /tmp/monitoring-ingress.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: Verify installation and display access information
+  hosts: master
+  become: true
+  tasks:
+    - name: Get all pods in monitoring namespace
+      shell: kubectl get pods -n monitoring
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: monitoring_pods
+
+    - name: Display monitoring pods
+      debug:
+        var: monitoring_pods.stdout_lines
+
+    - name: Get ingress information
+      shell: kubectl get ingress -n monitoring
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: ingress_info
+
+    - name: Display ingress information
+      debug:
+        var: ingress_info.stdout_lines
+
+    - name: Get NodePort services
+      shell: kubectl get svc -n ingress-nginx | grep NodePort
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: nodeport_services
+      ignore_errors: yes
+
+    - name: Display NodePort services
+      debug:
+        var: nodeport_services.stdout_lines
+      when: nodeport_services.stdout != ""
+
+    - name: Create access information file
+      copy:
+        dest: /tmp/production-access.txt
+        content: |
+          🚀 Production Kubernetes Cluster Access Information
+          ================================================
+          
+          📊 MONITORING STACK
+          ------------------
+          Prometheus: http://prometheus.{{ ansible_default_ipv4.address }}.nip.io:30080
+          Grafana: http://grafana.{{ ansible_default_ipv4.address }}.nip.io:30080
+            └── Username: admin
+            └── Password: {{ grafana_admin_password }}
+          AlertManager: http://alertmanager.{{ ansible_default_ipv4.address }}.nip.io:30080
+          
+          🌐 INGRESS CONTROLLER
+          --------------------
+          NGINX Ingress: Available on ports 30080 (HTTP) and 30443 (HTTPS)
+          Controller Status: kubectl get pods -n ingress-nginx
+          
+          📦 PACKAGE MANAGER
+          -----------------
+          Helm: Installed and configured
+          Repositories: prometheus-community, grafana, ingress-nginx, traefik, metrics-server
+          
+          🗄️ STORAGE
+          ----------
+          Default StorageClass: local-path
+          Persistent Volumes: Supported via local-path-provisioner
+          
+          🔧 USEFUL COMMANDS
+          -----------------
+          View all services: kubectl get svc --all-namespaces
+          Check cluster health: kubectl get nodes -o wide
+          Monitor pods: kubectl get pods --all-namespaces
+          View logs: kubectl logs -f <pod-name> -n <namespace>
+          
+          📝 NEXT STEPS
+          ------------
+          1. Configure DNS or add entries to /etc/hosts:
+             {{ ansible_default_ipv4.address }} prometheus.{{ ansible_default_ipv4.address }}.nip.io
+             {{ ansible_default_ipv4.address }} grafana.{{ ansible_default_ipv4.address }}.nip.io
+             {{ ansible_default_ipv4.address }} alertmanager.{{ ansible_default_ipv4.address }}.nip.io
+          
+          2. Deploy your applications using ingress resources
+          3. Configure alerting rules in AlertManager
+          4. Set up Grafana dashboards and datasources
+          5. Implement backup strategies for persistent data
+      delegate_to: localhost
+
+    - name: Display success message
+      debug:
+        msg: |
+          ✅ Production addons installed successfully!
+          
+          📋 Installed Components:
+          • Helm v{{ helm_version }}
+          • NGINX Ingress Controller
+          • Prometheus + Grafana + AlertManager
+          • Metrics Server
+          • Local Path Provisioner
+          
+          🔗 Access URLs (using nip.io):
+          • Prometheus: http://prometheus.{{ ansible_default_ipv4.address }}.nip.io:30080
+          • Grafana: http://grafana.{{ ansible_default_ipv4.address }}.nip.io:30080
+          • AlertManager: http://alertmanager.{{ ansible_default_ipv4.address }}.nip.io:30080
+          
+          📄 Detailed access info saved to /tmp/production-access.txt 

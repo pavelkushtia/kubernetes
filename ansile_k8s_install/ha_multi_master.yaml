@@ -1,0 +1,713 @@
+---
+# High Availability Multi-Master Kubernetes Cluster Setup
+# Requires: 3+ master nodes, 3+ etcd nodes (can be same as masters), 1+ load balancer
+
+- name: Validate HA prerequisites
+  hosts: all
+  become: true
+  vars:
+    k8s_version: "1.28.0"
+    containerd_version: "1.7.6"
+    cluster_name: "k8s-ha-cluster"
+    pod_network_cidr: "192.168.0.0/16"
+    service_subnet: "10.96.0.0/12"
+    # Load balancer endpoint - change to your LB IP/FQDN
+    control_plane_endpoint: "k8s-api.local:6443"
+    load_balancer_ip: "192.168.1.100"  # Virtual IP or load balancer IP
+  
+  pre_tasks:
+    - name: Check minimum master nodes
+      fail:
+        msg: "HA cluster requires minimum 3 master nodes"
+      when: groups['masters'] | length < 3
+      run_once: true
+      delegate_to: localhost
+
+    - name: Check if running on Ubuntu
+      fail:
+        msg: "This playbook only supports Ubuntu"
+      when: ansible_distribution != "Ubuntu"
+    
+    - name: Check minimum memory requirements for masters
+      fail:
+        msg: "Master nodes require minimum 4GB RAM for HA setup"
+      when: ansible_memtotal_mb < 3800 and inventory_hostname in groups['masters']
+    
+    - name: Check minimum CPU requirements for masters
+      fail:
+        msg: "Master nodes require minimum 2 CPU cores"
+      when: ansible_processor_vcpus < 2 and inventory_hostname in groups['masters']
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      retries: 3
+      delay: 5
+
+    - name: Install prerequisite packages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - software-properties-common
+          - keepalived
+          - haproxy
+        state: present
+      retries: 3
+      delay: 5
+
+- name: Setup Load Balancer (HAProxy + Keepalived)
+  hosts: load_balancers
+  become: true
+  tasks:
+    - name: Configure HAProxy for Kubernetes API
+      copy:
+        dest: /etc/haproxy/haproxy.cfg
+        content: |
+          global
+              log stdout local0
+              chroot /var/lib/haproxy
+              stats socket /run/haproxy/admin.sock mode 660 level admin
+              stats timeout 30s
+              user haproxy
+              group haproxy
+              daemon
+
+          defaults
+              mode http
+              log global
+              option httplog
+              option dontlognull
+              option redispatch
+              retries 3
+              timeout http-request 10s
+              timeout queue 1m
+              timeout connect 10s
+              timeout client 1m
+              timeout server 1m
+              timeout http-keep-alive 10s
+              timeout check 10s
+              maxconn 3000
+
+          # Kubernetes API Server Frontend
+          frontend k8s-api-frontend
+              bind *:6443
+              mode tcp
+              option tcplog
+              default_backend k8s-api-backend
+
+          # Kubernetes API Server Backend
+          backend k8s-api-backend
+              mode tcp
+              option tcp-check
+              balance roundrobin
+          {% for host in groups['masters'] %}
+              server {{ host }} {{ hostvars[host]['ansible_host'] }}:6443 check fall 3 rise 2
+          {% endfor %}
+
+          # HAProxy Stats
+          frontend stats
+              bind *:8404
+              stats enable
+              stats uri /stats
+              stats refresh 30s
+        backup: yes
+      notify: restart haproxy
+
+    - name: Configure Keepalived for VIP
+      copy:
+        dest: /etc/keepalived/keepalived.conf
+        content: |
+          vrrp_script chk_haproxy {
+              script "/bin/kill -0 `cat /var/run/haproxy.pid`"
+              interval 2
+              weight 2
+              fall 3
+              rise 2
+          }
+
+          vrrp_instance VI_1 {
+              state {% if inventory_hostname == groups['load_balancers'][0] %}MASTER{% else %}BACKUP{% endif %}
+              
+              interface {{ ansible_default_ipv4.interface }}
+              virtual_router_id 51
+              priority {% if inventory_hostname == groups['load_balancers'][0] %}110{% else %}100{% endif %}
+              
+              advert_int 1
+              authentication {
+                  auth_type PASS
+                  auth_pass k8s_ha_pass
+              }
+              virtual_ipaddress {
+                  {{ load_balancer_ip }}
+              }
+              track_script {
+                  chk_haproxy
+              }
+          }
+        backup: yes
+      notify: restart keepalived
+
+    - name: Enable and start HAProxy
+      systemd:
+        name: haproxy
+        enabled: yes
+        state: started
+
+    - name: Enable and start Keepalived
+      systemd:
+        name: keepalived
+        enabled: yes
+        state: started
+
+  handlers:
+    - name: restart haproxy
+      systemd:
+        name: haproxy
+        state: restarted
+
+    - name: restart keepalived
+      systemd:
+        name: keepalived
+        state: restarted
+
+- name: Setup External etcd Cluster
+  hosts: etcd
+  become: true
+  vars:
+    etcd_version: "3.5.9"
+  tasks:
+    - name: Create etcd user
+      user:
+        name: etcd
+        system: yes
+        shell: /bin/false
+        home: /var/lib/etcd
+        create_home: no
+
+    - name: Create etcd directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: etcd
+        group: etcd
+        mode: '0755'
+      loop:
+        - /etc/etcd
+        - /var/lib/etcd
+        - /var/lib/etcd/data
+
+    - name: Download etcd
+      get_url:
+        url: "https://github.com/etcd-io/etcd/releases/download/v{{ etcd_version }}/etcd-v{{ etcd_version }}-linux-amd64.tar.gz"
+        dest: /tmp/etcd.tar.gz
+        mode: '0644'
+      retries: 3
+      delay: 5
+
+    - name: Extract etcd
+      unarchive:
+        src: /tmp/etcd.tar.gz
+        dest: /tmp
+        remote_src: yes
+        creates: "/tmp/etcd-v{{ etcd_version }}-linux-amd64/etcd"
+
+    - name: Install etcd binaries
+      copy:
+        src: "/tmp/etcd-v{{ etcd_version }}-linux-amd64/{{ item }}"
+        dest: "/usr/local/bin/{{ item }}"
+        mode: '0755'
+        remote_src: yes
+      loop:
+        - etcd
+        - etcdctl
+
+    - name: Generate etcd certificates (simplified for demo)
+      shell: |
+        mkdir -p /etc/etcd/pki
+        openssl genrsa -out /etc/etcd/pki/etcd-ca-key.pem 2048
+        openssl req -new -x509 -key /etc/etcd/pki/etcd-ca-key.pem -out /etc/etcd/pki/etcd-ca.pem -days 365 -subj "/CN=etcd-ca"
+        openssl genrsa -out /etc/etcd/pki/etcd-key.pem 2048
+        openssl req -new -key /etc/etcd/pki/etcd-key.pem -out /etc/etcd/pki/etcd.csr -subj "/CN=etcd"
+        openssl x509 -req -in /etc/etcd/pki/etcd.csr -CA /etc/etcd/pki/etcd-ca.pem -CAkey /etc/etcd/pki/etcd-ca-key.pem -out /etc/etcd/pki/etcd.pem -days 365 -CAcreateserial
+        chown -R etcd:etcd /etc/etcd/pki
+      args:
+        creates: /etc/etcd/pki/etcd.pem
+
+    - name: Configure etcd
+      copy:
+        dest: /etc/etcd/etcd.conf.yml
+        content: |
+          name: {{ inventory_hostname }}
+          data-dir: /var/lib/etcd/data
+          wal-dir: /var/lib/etcd/wal
+          snapshot-count: 10000
+          heartbeat-interval: 100
+          election-timeout: 1000
+          quota-backend-bytes: 0
+          listen-peer-urls: https://{{ ansible_default_ipv4.address }}:2380
+          listen-client-urls: https://{{ ansible_default_ipv4.address }}:2379,https://127.0.0.1:2379
+          max-snapshots: 5
+          max-wals: 5
+          cors:
+          initial-advertise-peer-urls: https://{{ ansible_default_ipv4.address }}:2380
+          advertise-client-urls: https://{{ ansible_default_ipv4.address }}:2379
+          discovery-fallback: 'proxy'
+          discovery-proxy: ''
+          discovery-srv: ''
+          initial-cluster: {% for host in groups['etcd'] %}{{ host }}=https://{{ hostvars[host]['ansible_host'] }}:2380{% if not loop.last %},{% endif %}{% endfor %}
+          
+          initial-cluster-token: 'etcd-cluster'
+          initial-cluster-state: 'new'
+          strict-reconfig-check: false
+          enable-v2: true
+          enable-pprof: true
+          proxy: 'off'
+          proxy-failure-wait: 5000
+          proxy-refresh-interval: 30000
+          proxy-dial-timeout: 1000
+          proxy-write-timeout: 5000
+          proxy-read-timeout: 0
+          client-transport-security:
+            cert-file: /etc/etcd/pki/etcd.pem
+            key-file: /etc/etcd/pki/etcd-key.pem
+            client-cert-auth: false
+            trusted-ca-file: /etc/etcd/pki/etcd-ca.pem
+            auto-tls: false
+          peer-transport-security:
+            cert-file: /etc/etcd/pki/etcd.pem
+            key-file: /etc/etcd/pki/etcd-key.pem
+            client-cert-auth: false
+            trusted-ca-file: /etc/etcd/pki/etcd-ca.pem
+            auto-tls: false
+          debug: false
+          logger: zap
+          log-outputs: [stderr]
+          force-new-cluster: false
+        owner: etcd
+        group: etcd
+        mode: '0644'
+
+    - name: Create etcd systemd service
+      copy:
+        dest: /etc/systemd/system/etcd.service
+        content: |
+          [Unit]
+          Description=etcd
+          Documentation=https://github.com/coreos
+          Conflicts=etcd.service
+          Conflicts=etcd2.service
+
+          [Service]
+          Type=notify
+          Restart=always
+          RestartSec=5s
+          LimitNOFILE=40000
+          TimeoutStartSec=0
+
+          User=etcd
+          PermissionsStartOnly=true
+          ExecStart=/usr/local/bin/etcd --config-file /etc/etcd/etcd.conf.yml
+          Restart=on-failure
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable and start etcd
+      systemd:
+        name: etcd
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
+    - name: Wait for etcd to be ready
+      shell: |
+        ETCDCTL_API=3 etcdctl \
+          --endpoints=https://{{ ansible_default_ipv4.address }}:2379 \
+          --cacert=/etc/etcd/pki/etcd-ca.pem \
+          --cert=/etc/etcd/pki/etcd.pem \
+          --key=/etc/etcd/pki/etcd-key.pem \
+          endpoint health
+      retries: 10
+      delay: 5
+
+- name: Configure system for Kubernetes (HA)
+  hosts: masters:workers
+  become: true
+  tasks:
+    - name: Set hostname
+      hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Update /etc/hosts for HA
+      blockinfile:
+        path: /etc/hosts
+        block: |
+          # Load Balancer
+          {{ load_balancer_ip }} {{ control_plane_endpoint.split(':')[0] }}
+          
+          # Master nodes
+          {% for host in groups['masters'] %}
+          {{ hostvars[host]['ansible_host'] }} {{ host }}
+          {% endfor %}
+          
+          # Worker nodes
+          {% for host in groups['workers'] %}
+          {{ hostvars[host]['ansible_host'] }} {{ host }}
+          {% endfor %}
+          
+          # etcd nodes
+          {% for host in groups['etcd'] %}
+          {{ hostvars[host]['ansible_host'] }} {{ host }}
+          {% endfor %}
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - K8S HA HOSTS"
+        backup: yes
+
+    - name: Disable swap permanently
+      shell: |
+        swapoff -a
+        sed -i '/ swap / s/^/#/' /etc/fstab
+
+    - name: Load kernel modules
+      modprobe:
+        name: "{{ item }}"
+      loop:
+        - br_netfilter
+        - overlay
+      
+    - name: Configure kernel modules to load at boot
+      copy:
+        dest: /etc/modules-load.d/k8s.conf
+        content: |
+          br_netfilter
+          overlay
+
+    - name: Configure sysctl for Kubernetes
+      copy:
+        dest: /etc/sysctl.d/k8s.conf
+        content: |
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.bridge.bridge-nf-call-iptables = 1
+          net.ipv4.ip_forward = 1
+        backup: yes
+      notify: reload sysctl
+
+  handlers:
+    - name: reload sysctl
+      command: sysctl --system
+
+- name: Install and configure containerd (HA)
+  hosts: masters:workers
+  become: true
+  tasks:
+    - name: Install containerd
+      apt:
+        name: "containerd.io={{ containerd_version }}*"
+        state: present
+        update_cache: yes
+      retries: 3
+      delay: 5
+
+    - name: Create containerd config directory
+      file:
+        path: /etc/containerd
+        state: directory
+        mode: '0755'
+
+    - name: Generate containerd configuration
+      shell: containerd config default > /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+
+    - name: Configure containerd to use systemd cgroup driver
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+      notify: restart containerd
+
+    - name: Enable and start containerd
+      systemd:
+        name: containerd
+        enabled: yes
+        state: started
+
+  handlers:
+    - name: restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+
+- name: Install Kubernetes components (HA)
+  hosts: masters:workers
+  become: true
+  tasks:
+    - name: Add Kubernetes signing key
+      get_url:
+        url: https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key
+        dest: /tmp/k8s-key
+        mode: '0644'
+      retries: 3
+      delay: 5
+
+    - name: Add Kubernetes signing key to keyring
+      shell: cat /tmp/k8s-key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Add Kubernetes repository
+      apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /"
+        state: present
+        filename: kubernetes
+        update_cache: yes
+
+    - name: Install specific versions of Kubernetes components
+      apt:
+        name:
+          - "kubelet={{ k8s_version }}*"
+          - "kubeadm={{ k8s_version }}*"
+          - "kubectl={{ k8s_version }}*"
+        state: present
+        update_cache: yes
+      retries: 3
+      delay: 5
+
+    - name: Hold Kubernetes packages
+      dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - kubelet
+        - kubeadm
+        - kubectl
+
+    - name: Configure kubelet for HA
+      copy:
+        dest: /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+        content: |
+          [Service]
+          Environment="KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=/etc/kubernetes/kubelet.conf"
+          Environment="KUBELET_CONFIG_ARGS=--config=/var/lib/kubelet/config.yaml"
+          Environment="KUBELET_KUBEADM_ARGS=--container-runtime=remote --container-runtime-endpoint=unix:///var/run/containerd/containerd.sock"
+          Environment="KUBELET_EXTRA_ARGS=--node-ip={{ ansible_default_ipv4.address }}"
+          ExecStart=
+          ExecStart=/usr/bin/kubelet $KUBELET_KUBECONFIG_ARGS $KUBELET_CONFIG_ARGS $KUBELET_KUBEADM_ARGS $KUBELET_EXTRA_ARGS
+        backup: yes
+      notify: restart kubelet
+
+    - name: Enable kubelet
+      systemd:
+        name: kubelet
+        enabled: yes
+        daemon_reload: yes
+
+  handlers:
+    - name: restart kubelet
+      systemd:
+        name: kubelet
+        state: restarted
+
+- name: Initialize first master node
+  hosts: masters[0]
+  become: true
+  tasks:
+    - name: Create kubeadm config for HA
+      copy:
+        dest: /tmp/kubeadm-config.yaml
+        content: |
+          apiVersion: kubeadm.k8s.io/v1beta3
+          kind: ClusterConfiguration
+          kubernetesVersion: v{{ k8s_version }}
+          clusterName: {{ cluster_name }}
+          controlPlaneEndpoint: "{{ control_plane_endpoint }}"
+          networking:
+            serviceSubnet: "{{ service_subnet }}"
+            podSubnet: "{{ pod_network_cidr }}"
+          etcd:
+            external:
+              endpoints:
+              {% for host in groups['etcd'] %}
+              - "https://{{ hostvars[host]['ansible_host'] }}:2379"
+              {% endfor %}
+              caFile: "/etc/kubernetes/pki/etcd/ca.crt"
+              certFile: "/etc/kubernetes/pki/apiserver-etcd-client.crt"
+              keyFile: "/etc/kubernetes/pki/apiserver-etcd-client.key"
+          ---
+          apiVersion: kubeadm.k8s.io/v1beta3
+          kind: InitConfiguration
+          nodeRegistration:
+            criSocket: unix:///var/run/containerd/containerd.sock
+            kubeletExtraArgs:
+              node-ip: {{ ansible_default_ipv4.address }}
+
+    - name: Copy etcd CA to Kubernetes PKI
+      shell: |
+        mkdir -p /etc/kubernetes/pki/etcd
+        cp /etc/etcd/pki/etcd-ca.pem /etc/kubernetes/pki/etcd/ca.crt
+        cp /etc/etcd/pki/etcd.pem /etc/kubernetes/pki/apiserver-etcd-client.crt
+        cp /etc/etcd/pki/etcd-key.pem /etc/kubernetes/pki/apiserver-etcd-client.key
+      when: "'etcd' in group_names"
+
+    - name: Fetch etcd certificates from etcd nodes
+      fetch:
+        src: "{{ item }}"
+        dest: "/tmp/etcd-certs/"
+        flat: yes
+      loop:
+        - /etc/etcd/pki/etcd-ca.pem
+        - /etc/etcd/pki/etcd.pem
+        - /etc/etcd/pki/etcd-key.pem
+      delegate_to: "{{ groups['etcd'][0] }}"
+      when: "'etcd' not in group_names"
+
+    - name: Copy etcd certificates to master
+      copy:
+        src: "/tmp/etcd-certs/{{ item.src }}"
+        dest: "{{ item.dest }}"
+        mode: '0600'
+      loop:
+        - { src: "etcd-ca.pem", dest: "/etc/kubernetes/pki/etcd/ca.crt" }
+        - { src: "etcd.pem", dest: "/etc/kubernetes/pki/apiserver-etcd-client.crt" }
+        - { src: "etcd-key.pem", dest: "/etc/kubernetes/pki/apiserver-etcd-client.key" }
+      when: "'etcd' not in group_names"
+
+    - name: Initialize the first master node
+      shell: kubeadm init --config=/tmp/kubeadm-config.yaml --upload-certs
+      register: kubeadm_output
+      args:
+        creates: /etc/kubernetes/admin.conf
+
+    - name: Save kubeadm output
+      copy:
+        content: "{{ kubeadm_output.stdout }}"
+        dest: /tmp/kubeadm-init-output.txt
+      when: kubeadm_output.stdout is defined
+
+    - name: Extract certificate key
+      shell: |
+        grep -A 2 "certificate-key" /tmp/kubeadm-init-output.txt | tail -1 | awk '{print $NF}'
+      register: cert_key
+      when: kubeadm_output.stdout is defined
+
+    - name: Create kubeconfig for root
+      shell: |
+        mkdir -p /root/.kube
+        cp /etc/kubernetes/admin.conf /root/.kube/config
+        chown root:root /root/.kube/config
+
+    - name: Install Calico CNI
+      shell: |
+        kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      retries: 3
+      delay: 10
+
+- name: Join additional master nodes
+  hosts: masters[1:]
+  become: true
+  serial: 1
+  tasks:
+    - name: Get join command for masters
+      shell: kubeadm token create --print-join-command
+      register: join_command
+      delegate_to: "{{ groups['masters'][0] }}"
+
+    - name: Get certificate key
+      shell: kubeadm init phase upload-certs --upload-certs | tail -1
+      register: cert_key
+      delegate_to: "{{ groups['masters'][0] }}"
+
+    - name: Join master to cluster
+      shell: |
+        {{ join_command.stdout }} --control-plane --certificate-key {{ cert_key.stdout }}
+      args:
+        creates: /etc/kubernetes/admin.conf
+
+    - name: Create kubeconfig for root
+      shell: |
+        mkdir -p /root/.kube
+        cp /etc/kubernetes/admin.conf /root/.kube/config
+        chown root:root /root/.kube/config
+
+- name: Join worker nodes to HA cluster
+  hosts: workers
+  become: true
+  serial: 1
+  tasks:
+    - name: Get join command for workers
+      shell: kubeadm token create --print-join-command
+      register: join_command
+      delegate_to: "{{ groups['masters'][0] }}"
+
+    - name: Join worker to cluster
+      shell: "{{ join_command.stdout }}"
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+
+    - name: Wait for node to be ready
+      shell: kubectl get nodes {{ inventory_hostname }} --no-headers | awk '{print $2}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      delegate_to: "{{ groups['masters'][0] }}"
+      register: node_status
+      until: node_status.stdout == "Ready"
+      retries: 20
+      delay: 15
+
+- name: Verify HA cluster
+  hosts: masters[0]
+  become: true
+  tasks:
+    - name: Get cluster info
+      shell: kubectl cluster-info
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: cluster_info
+
+    - name: Get node status
+      shell: kubectl get nodes -o wide
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: nodes_status
+
+    - name: Get etcd health
+      shell: |
+        ETCDCTL_API=3 etcdctl \
+          --endpoints={% for host in groups['etcd'] %}https://{{ hostvars[host]['ansible_host'] }}:2379{% if not loop.last %},{% endif %}{% endfor %} \
+          --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+          --cert=/etc/kubernetes/pki/apiserver-etcd-client.crt \
+          --key=/etc/kubernetes/pki/apiserver-etcd-client.key \
+          endpoint health
+      register: etcd_health
+
+    - name: Display cluster information
+      debug:
+        msg: |
+          🚀 HA Kubernetes Cluster Ready!
+          
+          📊 Cluster Status:
+          {{ cluster_info.stdout }}
+          
+          🖥️ Nodes:
+          {{ nodes_status.stdout }}
+          
+          💾 etcd Health:
+          {{ etcd_health.stdout }}
+          
+          🔗 Access:
+          Control Plane Endpoint: {{ control_plane_endpoint }}
+          Load Balancer IP: {{ load_balancer_ip }}
+          
+          📋 Components:
+          • {{ groups['masters'] | length }} Master nodes
+          • {{ groups['workers'] | length }} Worker nodes  
+          • {{ groups['etcd'] | length }} etcd nodes
+          • {{ groups['load_balancers'] | length }} Load balancer(s) 

@@ -1,0 +1,493 @@
+---
+# Improved Ansible playbook to set up a robust Kubernetes cluster using kubeadm
+# Enhanced with security, fault tolerance, and validation
+
+- name: Validate prerequisites
+  hosts: all
+  become: true
+  vars:
+    k8s_version: "1.28.0"
+    containerd_version: "1.7.6"
+    calico_version: "v3.27.0"
+    cluster_name: "k8s-cluster"
+    pod_network_cidr: "192.168.0.0/16"
+    service_subnet: "10.96.0.0/12"
+  
+  pre_tasks:
+    - name: Check if running on Ubuntu
+      fail:
+        msg: "This playbook only supports Ubuntu"
+      when: ansible_distribution != "Ubuntu"
+    
+    - name: Check minimum memory requirements
+      fail:
+        msg: "Minimum 2GB RAM required for Kubernetes nodes"
+      when: ansible_memtotal_mb < 1800
+    
+    - name: Check minimum CPU requirements
+      fail:
+        msg: "Minimum 2 CPU cores required"
+      when: ansible_processor_vcpus < 2
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      retries: 3
+      delay: 5
+
+    - name: Install prerequisite packages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - software-properties-common
+        state: present
+      retries: 3
+      delay: 5
+
+- name: Clean up previous installations
+  hosts: all
+  become: true
+  tasks:
+    - name: Reset Kubernetes (if previously initialized)
+      shell: |
+        kubeadm reset -f --cri-socket unix:///var/run/containerd/containerd.sock
+        iptables -F && iptables -t nat -F && iptables -t mangle -F && iptables -X
+      ignore_errors: yes
+
+    - name: Remove stale configurations and data
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/cni/net.d
+        - /var/lib/kubelet
+        - /var/lib/etcd
+        - /etc/kubernetes
+        - ~/.kube
+      ignore_errors: yes
+
+    - name: Remove stale network interfaces
+      shell: |
+        for iface in cni0 flannel.1 cali0 cali1 docker0; do
+          ip link delete $iface 2>/dev/null || true
+        done
+      ignore_errors: yes
+
+- name: Configure system for Kubernetes
+  hosts: all
+  become: true
+  tasks:
+    - name: Set hostname
+      hostname:
+        name: "{{ inventory_hostname }}"
+      notify: restart systemd-resolved
+
+    - name: Update /etc/hosts
+      blockinfile:
+        path: /etc/hosts
+        block: |
+          {% for host in groups['all'] %}
+          {{ hostvars[host]['ansible_host'] }} {{ host }} {{ host }}.{{ cluster_name }}
+          {% endfor %}
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - K8S HOSTS"
+        backup: yes
+
+    - name: Disable swap permanently
+      shell: |
+        swapoff -a
+        sed -i '/ swap / s/^/#/' /etc/fstab
+      args:
+        warn: false
+
+    - name: Load kernel modules
+      modprobe:
+        name: "{{ item }}"
+      loop:
+        - br_netfilter
+        - overlay
+      
+    - name: Configure kernel modules to load at boot
+      copy:
+        dest: /etc/modules-load.d/k8s.conf
+        content: |
+          br_netfilter
+          overlay
+
+    - name: Configure sysctl for Kubernetes
+      copy:
+        dest: /etc/sysctl.d/k8s.conf
+        content: |
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.bridge.bridge-nf-call-iptables = 1
+          net.ipv4.ip_forward = 1
+        backup: yes
+      notify: reload sysctl
+
+    - name: Configure firewall for Kubernetes
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "6443"    # API server
+        - "2379:2380"  # etcd
+        - "10250"   # kubelet
+        - "10259"   # kube-scheduler
+        - "10257"   # kube-controller-manager
+      when: inventory_hostname in groups['master']
+
+    - name: Configure firewall for worker nodes
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "10250"   # kubelet
+        - "30000:32767"  # NodePort services
+      when: inventory_hostname in groups['workers']
+
+  handlers:
+    - name: restart systemd-resolved
+      systemd:
+        name: systemd-resolved
+        state: restarted
+    
+    - name: reload sysctl
+      command: sysctl --system
+
+- name: Install and configure containerd
+  hosts: all
+  become: true
+  tasks:
+    - name: Install containerd
+      apt:
+        name: "containerd.io={{ containerd_version }}*"
+        state: present
+        update_cache: yes
+      retries: 3
+      delay: 5
+
+    - name: Create containerd config directory
+      file:
+        path: /etc/containerd
+        state: directory
+        mode: '0755'
+
+    - name: Generate containerd configuration
+      shell: containerd config default > /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+
+    - name: Configure containerd to use systemd cgroup driver
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+      notify: restart containerd
+
+    - name: Enable and start containerd
+      systemd:
+        name: containerd
+        enabled: yes
+        state: started
+
+  handlers:
+    - name: restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+
+- name: Install Kubernetes components
+  hosts: all
+  become: true
+  tasks:
+    - name: Add Kubernetes signing key
+      get_url:
+        url: https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key
+        dest: /tmp/k8s-key
+        mode: '0644'
+      retries: 3
+      delay: 5
+
+    - name: Add Kubernetes signing key to keyring
+      shell: cat /tmp/k8s-key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Add Kubernetes repository
+      apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /"
+        state: present
+        filename: kubernetes
+        update_cache: yes
+
+    - name: Install specific versions of Kubernetes components
+      apt:
+        name:
+          - "kubelet={{ k8s_version }}*"
+          - "kubeadm={{ k8s_version }}*"
+          - "kubectl={{ k8s_version }}*"
+        state: present
+        update_cache: yes
+      retries: 3
+      delay: 5
+
+    - name: Hold Kubernetes packages
+      dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - kubelet
+        - kubeadm
+        - kubectl
+
+    - name: Configure kubelet
+      copy:
+        dest: /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+        content: |
+          [Service]
+          Environment="KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=/etc/kubernetes/kubelet.conf"
+          Environment="KUBELET_CONFIG_ARGS=--config=/var/lib/kubelet/config.yaml"
+          Environment="KUBELET_KUBEADM_ARGS=--container-runtime=remote --container-runtime-endpoint=unix:///var/run/containerd/containerd.sock"
+          Environment="KUBELET_EXTRA_ARGS=--node-ip={{ ansible_default_ipv4.address }}"
+          ExecStart=
+          ExecStart=/usr/bin/kubelet $KUBELET_KUBECONFIG_ARGS $KUBELET_CONFIG_ARGS $KUBELET_KUBEADM_ARGS $KUBELET_EXTRA_ARGS
+        backup: yes
+      notify: restart kubelet
+
+    - name: Enable kubelet
+      systemd:
+        name: kubelet
+        enabled: yes
+        daemon_reload: yes
+
+  handlers:
+    - name: restart kubelet
+      systemd:
+        name: kubelet
+        state: restarted
+
+- name: Initialize Kubernetes master
+  hosts: master
+  become: true
+  tasks:
+    - name: Check if cluster is already initialized
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: k8s_init_stat
+
+    - name: Initialize the cluster
+      shell: |
+        kubeadm init \
+          --pod-network-cidr={{ pod_network_cidr }} \
+          --service-cidr={{ service_subnet }} \
+          --apiserver-advertise-address={{ ansible_default_ipv4.address }} \
+          --node-name={{ inventory_hostname }} \
+          --control-plane-endpoint={{ ansible_default_ipv4.address }}:6443 \
+          --upload-certs
+      register: kubeadm_output
+      when: not k8s_init_stat.stat.exists
+      retries: 3
+      delay: 10
+
+    - name: Create kubeconfig directory for root
+      file:
+        path: /root/.kube
+        state: directory
+        mode: '0755'
+
+    - name: Copy admin.conf to root's kubeconfig
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Create kubeconfig for regular user
+      become_user: "{{ ansible_user }}"
+      block:
+        - name: Create .kube directory
+          file:
+            path: "/home/{{ ansible_user }}/.kube"
+            state: directory
+            mode: '0755'
+
+        - name: Copy admin.conf to user's kubeconfig
+          copy:
+            src: /etc/kubernetes/admin.conf
+            dest: "/home/{{ ansible_user }}/.kube/config"
+            remote_src: yes
+            owner: "{{ ansible_user }}"
+            group: "{{ ansible_user }}"
+            mode: '0644'
+
+    - name: Generate join command
+      shell: kubeadm token create --print-join-command
+      register: join_command_output
+
+    - name: Save join command to file
+      copy:
+        content: "{{ join_command_output.stdout }}"
+        dest: /tmp/join.sh
+        mode: '0755'
+
+    - name: Wait for API server to be ready
+      uri:
+        url: "https://{{ ansible_default_ipv4.address }}:6443/healthz"
+        validate_certs: no
+        timeout: 5
+      register: api_health
+      until: api_health.status == 200
+      retries: 30
+      delay: 10
+
+    - name: Install Calico CNI
+      shell: |
+        kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/calico.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      retries: 3
+      delay: 10
+
+    - name: Wait for all system pods to be ready
+      shell: kubectl get pods -n kube-system --no-headers | grep -v Running | wc -l
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: pending_pods
+      until: pending_pods.stdout == "0"
+      retries: 30
+      delay: 10
+
+- name: Join worker nodes to the cluster
+  hosts: workers
+  become: true
+  serial: 1  # Join nodes one at a time
+  tasks:
+    - name: Check if node is already joined
+      stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubelet_conf_stat
+
+    - name: Fetch join command from master
+      slurp:
+        src: /tmp/join.sh
+      register: join_command
+      delegate_to: "{{ groups['master'][0] }}"
+      when: not kubelet_conf_stat.stat.exists
+
+    - name: Execute join command
+      shell: "{{ join_command.content | b64decode }}"
+      when: not kubelet_conf_stat.stat.exists
+      retries: 3
+      delay: 10
+
+    - name: Wait for node to be ready
+      shell: kubectl get nodes {{ inventory_hostname }} --no-headers | awk '{print $2}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      delegate_to: "{{ groups['master'][0] }}"
+      register: node_status
+      until: node_status.stdout == "Ready"
+      retries: 20
+      delay: 15
+      when: not kubelet_conf_stat.stat.exists
+
+- name: Verify cluster installation
+  hosts: master
+  become: true
+  tasks:
+    - name: Get cluster info
+      shell: kubectl cluster-info
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: cluster_info
+
+    - name: Display cluster info
+      debug:
+        var: cluster_info.stdout_lines
+
+    - name: Get node status
+      shell: kubectl get nodes -o wide
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: nodes_status
+
+    - name: Display node status
+      debug:
+        var: nodes_status.stdout_lines
+
+    - name: Verify all nodes are Ready
+      shell: kubectl get nodes --no-headers | awk '{print $2}' | grep -v Ready | wc -l
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: not_ready_nodes
+      failed_when: not_ready_nodes.stdout != "0"
+
+    - name: Create test deployment for verification
+      shell: |
+        kubectl create deployment nginx-test --image=nginx:latest
+        kubectl expose deployment nginx-test --port=80 --type=NodePort
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      ignore_errors: yes
+
+    - name: Wait for test deployment to be ready
+      shell: kubectl get deployment nginx-test -o jsonpath='{.status.readyReplicas}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: ready_replicas
+      until: ready_replicas.stdout == "1"
+      retries: 10
+      delay: 10
+      ignore_errors: yes
+
+    - name: Clean up test deployment
+      shell: |
+        kubectl delete deployment nginx-test
+        kubectl delete service nginx-test
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      ignore_errors: yes
+
+    - name: Save cluster access information
+      copy:
+        dest: /tmp/cluster-access.txt
+        content: |
+          Kubernetes Cluster Access Information
+          ===================================
+          
+          Master Node: {{ ansible_default_ipv4.address }}
+          API Server: https://{{ ansible_default_ipv4.address }}:6443
+          
+          To access the cluster remotely:
+          1. Copy /etc/kubernetes/admin.conf from master to your local machine
+          2. Set KUBECONFIG environment variable or copy to ~/.kube/config
+          
+          Cluster Nodes:
+          {% for host in groups['all'] %}
+          - {{ host }}: {{ hostvars[host]['ansible_host'] }}
+          {% endfor %}
+      delegate_to: localhost
+
+    - name: Display success message
+      debug:
+        msg: |
+          ✅ Kubernetes cluster setup completed successfully!
+          
+          📋 Cluster Summary:
+          - Master nodes: {{ groups['master'] | length }}
+          - Worker nodes: {{ groups['workers'] | length }}
+          - Total nodes: {{ groups['all'] | length }}
+          
+          🔍 Next steps:
+          1. Check cluster status: kubectl get nodes
+          2. Deploy applications: kubectl create deployment <name> --image=<image>
+          3. Access cluster info saved to /tmp/cluster-access.txt 
