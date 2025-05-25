@@ -1,5 +1,6 @@
-# TweetStream Helm Chart Values
-# This file contains the default configuration values for TweetStream
+# TweetStream Master Node Only (TEMPORARY)
+# This configuration runs application pods only on master node
+# Use this as a temporary workaround while setting up proper image distribution
 
 # Global settings
 global:
@@ -21,12 +22,12 @@ serviceAccount:
 api:
   enabled: true
   name: tweetstream-api
-  replicaCount: 3
+  replicaCount: 1  # Single replica on master
   
   image:
     repository: tweetstream/api
     tag: "1.0.0"
-    pullPolicy: IfNotPresent
+    pullPolicy: Never  # Use local images only
   
   env:
     NODE_ENV: production
@@ -46,11 +47,7 @@ api:
       memory: 256Mi
   
   autoscaling:
-    enabled: true
-    minReplicas: 3
-    maxReplicas: 10
-    targetCPUUtilizationPercentage: 70
-    targetMemoryUtilizationPercentage: 80
+    enabled: false  # Disabled for master-only deployment
   
   livenessProbe:
     httpGet:
@@ -74,12 +71,12 @@ api:
 frontend:
   enabled: true
   name: tweetstream-frontend
-  replicaCount: 2
+  replicaCount: 1  # Single replica on master
   
   image:
     repository: tweetstream/frontend
     tag: "1.0.0"
-    pullPolicy: IfNotPresent
+    pullPolicy: Never  # Use local images only
   
   service:
     type: ClusterIP
@@ -95,10 +92,7 @@ frontend:
       memory: 64Mi
   
   autoscaling:
-    enabled: true
-    minReplicas: 2
-    maxReplicas: 5
-    targetCPUUtilizationPercentage: 70
+    enabled: false  # Disabled for master-only deployment
   
   livenessProbe:
     httpGet:
@@ -114,7 +108,7 @@ frontend:
     initialDelaySeconds: 5
     periodSeconds: 5
 
-# Database Configuration (PostgreSQL)
+# Database Configuration (PostgreSQL) - Can run on any node
 database:
   enabled: true
   name: postgres-primary
@@ -146,11 +140,7 @@ database:
       cpu: 500m
       memory: 512Mi
 
-# External Database (if database.enabled is false)
-externalDatabase:
-  url: ""
-
-# Redis Configuration
+# Redis Configuration - Can run on any node
 redis:
   enabled: true
   name: redis
@@ -177,87 +167,13 @@ redis:
       cpu: 100m
       memory: 128Mi
 
-# External Redis (if redis.enabled is false)
-externalRedis:
-  url: ""
-
-# Kafka Configuration
+# Kafka Configuration - DISABLED for now
 kafka:
-  enabled: true
-  name: kafka
-  
-  image:
-    repository: confluentinc/cp-kafka
-    tag: "7.4.0"
-    pullPolicy: IfNotPresent
-  
-  service:
-    type: ClusterIP
-    port: 9092
-    controllerPort: 9093
-  
-  persistence:
-    enabled: true
-    storageClass: "local-path"
-    size: 5Gi
-  
-  resources:
-    limits:
-      cpu: 1000m
-      memory: 1Gi
-    requests:
-      cpu: 500m
-      memory: 512Mi
+  enabled: false
 
-# External Kafka (if kafka.enabled is false)
-externalKafka:
-  url: ""
-
-# Monitoring Configuration
+# Monitoring Configuration - DISABLED for now
 monitoring:
-  enabled: true
-  
-  # PostgreSQL Exporter
-  postgresExporter:
-    enabled: true
-    image:
-      repository: prometheuscommunity/postgres-exporter
-      tag: "v0.13.2"
-    resources:
-      limits:
-        cpu: 100m
-        memory: 128Mi
-      requests:
-        cpu: 50m
-        memory: 64Mi
-  
-  # Redis Exporter
-  redisExporter:
-    enabled: true
-    image:
-      repository: oliver006/redis_exporter
-      tag: "v1.52.0"
-    resources:
-      limits:
-        cpu: 100m
-        memory: 128Mi
-      requests:
-        cpu: 50m
-        memory: 64Mi
-  
-  # Kafka Exporter
-  kafkaExporter:
-    enabled: true
-    image:
-      repository: danielqsj/kafka-exporter
-      tag: "v1.6.0"
-    resources:
-      limits:
-        cpu: 100m
-        memory: 128Mi
-      requests:
-        cpu: 50m
-        memory: 64Mi
+  enabled: false
 
 # Ingress Configuration
 ingress:
@@ -303,35 +219,28 @@ networkPolicy:
 
 # Pod Disruption Budget
 podDisruptionBudget:
-  enabled: true
-  minAvailable: 1
+  enabled: false
 
-# Node Affinity and Tolerations
-nodeSelector: {}
-tolerations: []
+# FORCE APPLICATION PODS TO MASTER NODE (TEMPORARY)
+nodeSelector:
+  kubernetes.io/hostname: master-node
+
+tolerations:
+- key: node-role.kubernetes.io/control-plane
+  operator: Exists
+  effect: NoSchedule
+- key: node-role.kubernetes.io/master
+  operator: Exists
+  effect: NoSchedule
+
 affinity: {}
 
 # Additional labels and annotations
-commonLabels: {}
-commonAnnotations: {}
+commonLabels:
+  deployment-type: "temporary-master-only"
 
-# Init containers
-initContainers: []
-
-# Sidecar containers
-sidecars: []
-
-# Extra volumes
-extraVolumes: []
-
-# Extra volume mounts
-extraVolumeMounts: []
-
-# Environment variables from secrets/configmaps
-envFrom: []
-
-# Additional environment variables
-extraEnvVars: []
+commonAnnotations:
+  deployment-note: "TEMPORARY: Application pods running on master node only"
 
 # Secrets
 secrets:

@@ -1,5 +1,5 @@
-# TweetStream Helm Chart Values
-# This file contains the default configuration values for TweetStream
+# TweetStream Local Development Values
+# This file is configured for local development with locally built images
 
 # Global settings
 global:
@@ -21,12 +21,12 @@ serviceAccount:
 api:
   enabled: true
   name: tweetstream-api
-  replicaCount: 3
+  replicaCount: 1  # Reduced for local development
   
   image:
     repository: tweetstream/api
     tag: "1.0.0"
-    pullPolicy: IfNotPresent
+    pullPolicy: Never  # Use local images only
   
   env:
     NODE_ENV: production
@@ -46,11 +46,7 @@ api:
       memory: 256Mi
   
   autoscaling:
-    enabled: true
-    minReplicas: 3
-    maxReplicas: 10
-    targetCPUUtilizationPercentage: 70
-    targetMemoryUtilizationPercentage: 80
+    enabled: false  # Disabled for local development
   
   livenessProbe:
     httpGet:
@@ -74,12 +70,12 @@ api:
 frontend:
   enabled: true
   name: tweetstream-frontend
-  replicaCount: 2
+  replicaCount: 1  # Reduced for local development
   
   image:
     repository: tweetstream/frontend
     tag: "1.0.0"
-    pullPolicy: IfNotPresent
+    pullPolicy: Never  # Use local images only
   
   service:
     type: ClusterIP
@@ -95,10 +91,7 @@ frontend:
       memory: 64Mi
   
   autoscaling:
-    enabled: true
-    minReplicas: 2
-    maxReplicas: 5
-    targetCPUUtilizationPercentage: 70
+    enabled: false  # Disabled for local development
   
   livenessProbe:
     httpGet:
@@ -146,10 +139,6 @@ database:
       cpu: 500m
       memory: 512Mi
 
-# External Database (if database.enabled is false)
-externalDatabase:
-  url: ""
-
 # Redis Configuration
 redis:
   enabled: true
@@ -177,87 +166,13 @@ redis:
       cpu: 100m
       memory: 128Mi
 
-# External Redis (if redis.enabled is false)
-externalRedis:
-  url: ""
-
-# Kafka Configuration
+# Kafka Configuration - DISABLED for local development
 kafka:
-  enabled: true
-  name: kafka
-  
-  image:
-    repository: confluentinc/cp-kafka
-    tag: "7.4.0"
-    pullPolicy: IfNotPresent
-  
-  service:
-    type: ClusterIP
-    port: 9092
-    controllerPort: 9093
-  
-  persistence:
-    enabled: true
-    storageClass: "local-path"
-    size: 5Gi
-  
-  resources:
-    limits:
-      cpu: 1000m
-      memory: 1Gi
-    requests:
-      cpu: 500m
-      memory: 512Mi
+  enabled: false
 
-# External Kafka (if kafka.enabled is false)
-externalKafka:
-  url: ""
-
-# Monitoring Configuration
+# Monitoring Configuration - DISABLED for local development
 monitoring:
-  enabled: true
-  
-  # PostgreSQL Exporter
-  postgresExporter:
-    enabled: true
-    image:
-      repository: prometheuscommunity/postgres-exporter
-      tag: "v0.13.2"
-    resources:
-      limits:
-        cpu: 100m
-        memory: 128Mi
-      requests:
-        cpu: 50m
-        memory: 64Mi
-  
-  # Redis Exporter
-  redisExporter:
-    enabled: true
-    image:
-      repository: oliver006/redis_exporter
-      tag: "v1.52.0"
-    resources:
-      limits:
-        cpu: 100m
-        memory: 128Mi
-      requests:
-        cpu: 50m
-        memory: 64Mi
-  
-  # Kafka Exporter
-  kafkaExporter:
-    enabled: true
-    image:
-      repository: danielqsj/kafka-exporter
-      tag: "v1.6.0"
-    resources:
-      limits:
-        cpu: 100m
-        memory: 128Mi
-      requests:
-        cpu: 50m
-        memory: 64Mi
+  enabled: false
 
 # Ingress Configuration
 ingress:
@@ -303,35 +218,18 @@ networkPolicy:
 
 # Pod Disruption Budget
 podDisruptionBudget:
-  enabled: true
-  minAvailable: 1
+  enabled: false
 
-# Node Affinity and Tolerations
-nodeSelector: {}
+# Node Affinity and Tolerations - Force scheduling on master node
+nodeSelector:
+  kubernetes.io/hostname: master-node
+
 tolerations: []
 affinity: {}
 
 # Additional labels and annotations
 commonLabels: {}
 commonAnnotations: {}
-
-# Init containers
-initContainers: []
-
-# Sidecar containers
-sidecars: []
-
-# Extra volumes
-extraVolumes: []
-
-# Extra volume mounts
-extraVolumeMounts: []
-
-# Environment variables from secrets/configmaps
-envFrom: []
-
-# Additional environment variables
-extraEnvVars: []
 
 # Secrets
 secrets:

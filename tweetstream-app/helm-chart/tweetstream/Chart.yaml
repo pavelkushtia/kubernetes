@@ -20,17 +20,4 @@ keywords:
   - nodejs
 annotations:
   category: Application
-  licenses: MIT
-dependencies:
-  - name: postgresql
-    version: "12.x.x"
-    repository: "https://charts.bitnami.com/bitnami"
-    condition: postgresql.enabled
-  - name: redis
-    version: "17.x.x"
-    repository: "https://charts.bitnami.com/bitnami"
-    condition: redis.enabled
-  - name: kafka
-    version: "22.x.x"
-    repository: "https://charts.bitnami.com/bitnami"
-    condition: kafka.enabled 
+  licenses: MIT 

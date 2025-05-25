@@ -1,0 +1,197 @@
+# TweetStream Minimal Resources (TEMPORARY)
+# Ultra-low resource requests to fit on master node
+
+# Global settings
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# Service Account
+serviceAccount:
+  create: true
+
+# API Configuration
+api:
+  enabled: true
+  name: tweetstream-api
+  replicaCount: 1
+  
+  image:
+    repository: tweetstream/api
+    tag: "1.0.0"
+    pullPolicy: Never
+  
+  env:
+    NODE_ENV: production
+    PORT: "3000"
+  
+  service:
+    type: ClusterIP
+    port: 3000
+    targetPort: 3000
+  
+  resources:
+    limits:
+      cpu: 100m
+      memory: 256Mi
+    requests:
+      cpu: 50m    # Very low CPU request
+      memory: 128Mi
+  
+  autoscaling:
+    enabled: false
+  
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 3000
+    initialDelaySeconds: 60
+    periodSeconds: 30
+  
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 3000
+    initialDelaySeconds: 30
+    periodSeconds: 10
+
+# Frontend Configuration
+frontend:
+  enabled: true
+  name: tweetstream-frontend
+  replicaCount: 1
+  
+  image:
+    repository: tweetstream/frontend
+    tag: "1.0.0"
+    pullPolicy: Never
+  
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 80
+  
+  resources:
+    limits:
+      cpu: 50m
+      memory: 64Mi
+    requests:
+      cpu: 25m    # Very low CPU request
+      memory: 32Mi
+  
+  autoscaling:
+    enabled: false
+
+# Database Configuration - Run on worker nodes
+database:
+  enabled: true
+  name: postgres-primary
+  
+  image:
+    repository: postgres
+    tag: "15-alpine"
+    pullPolicy: IfNotPresent
+  
+  auth:
+    database: tweetstream
+    username: tweetuser
+    password: tweetpass123
+  
+  service:
+    type: ClusterIP
+    port: 5432
+  
+  persistence:
+    enabled: true
+    storageClass: "local-path"
+    size: 5Gi
+  
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+# Redis Configuration - Run on worker nodes
+redis:
+  enabled: true
+  name: redis
+  
+  image:
+    repository: redis
+    tag: "7-alpine"
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 6379
+  
+  persistence:
+    enabled: false
+  
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+# Kafka - DISABLED
+kafka:
+  enabled: false
+
+# Monitoring - DISABLED
+monitoring:
+  enabled: false
+
+# Ingress Configuration
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+  hosts:
+    - host: tweetstream.192.168.1.82.nip.io
+      paths:
+        - path: /
+          pathType: Prefix
+          service:
+            name: tweetstream-frontend
+            port: 80
+        - path: /api
+          pathType: Prefix
+          service:
+            name: tweetstream-api
+            port: 3000
+
+# Security Configuration - COMPLETELY DISABLED
+security:
+  podSecurityContext: null  # Explicitly disable
+  securityContext: null     # Explicitly disable
+
+# FORCE APPLICATION PODS TO MASTER NODE (TEMPORARY)
+nodeSelector:
+  kubernetes.io/hostname: master-node
+
+tolerations:
+- key: node-role.kubernetes.io/control-plane
+  operator: Exists
+  effect: NoSchedule
+- key: node-role.kubernetes.io/master
+  operator: Exists
+  effect: NoSchedule
+
+# Additional labels
+commonLabels:
+  deployment-type: "minimal-master-only"
+
+commonAnnotations:
+  deployment-note: "MINIMAL: Ultra-low resources for master node deployment"
+
+# Secrets
+secrets:
+  jwtSecret: "your-super-secret-jwt-key-change-this-in-production" 

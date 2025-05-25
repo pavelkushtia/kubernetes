@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: image-puller
+  namespace: tweetstream
+  labels:
+    app: image-puller
+spec:
+  selector:
+    matchLabels:
+      app: image-puller
+  template:
+    metadata:
+      labels:
+        app: image-puller
+    spec:
+      hostNetwork: true
+      containers:
+      - name: image-puller
+        image: docker:20.10-dind
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Configure insecure registry
+          mkdir -p /etc/docker
+          echo '{"insecure-registries":["192.168.1.82:5555"]}' > /etc/docker/daemon.json
+          
+          # Start Docker daemon
+          dockerd-entrypoint.sh &
+          sleep 10
+          
+          # Pull images
+          docker pull 192.168.1.82:5555/tweetstream/api:1.0.0
+          docker pull 192.168.1.82:5555/tweetstream/frontend:1.0.0
+          
+          # Tag images for local use
+          docker tag 192.168.1.82:5555/tweetstream/api:1.0.0 tweetstream/api:1.0.0
+          docker tag 192.168.1.82:5555/tweetstream/frontend:1.0.0 tweetstream/frontend:1.0.0
+          
+          echo "Images pulled and cached on $(hostname)"
+          
+          # Keep container running
+          tail -f /dev/null
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: docker-sock
+          mountPath: /var/run/docker.sock
+        - name: docker-data
+          mountPath: /var/lib/docker
+      volumes:
+      - name: docker-sock
+        hostPath:
+          path: /var/run/docker.sock
+      - name: docker-data
+        hostPath:
+          path: /var/lib/docker
+      tolerations:
+      - operator: Exists 
