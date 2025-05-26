@@ -25,14 +25,14 @@ fi
 # Tag images for GHCR
 echo "📦 Tagging images for GitHub Container Registry..."
 sudo docker tag tweetstream/api:1.0.0 $REGISTRY/$NAMESPACE/tweetstream-api:1.0.0
-sudo docker tag tweetstream/frontend:1.0.0 $REGISTRY/$NAMESPACE/tweetstream-frontend:1.0.0
+
+# Note: Frontend uses Python-based approach, not Docker image
+echo "📝 Note: Frontend deployment uses Python-based approach (improved-frontend.yaml)"
+echo "📝 Skipping frontend image push (not used)"
 
 # Push images
 echo "⬆️  Pushing API image..."
 sudo docker push $REGISTRY/$NAMESPACE/tweetstream-api:1.0.0
-
-echo "⬆️  Pushing Frontend image..."
-sudo docker push $REGISTRY/$NAMESPACE/tweetstream-frontend:1.0.0
 
 echo "✅ Images successfully pushed to GitHub Container Registry!"
 echo ""
@@ -45,7 +45,5 @@ echo "  image:"
 echo "    repository: tweetstream-api"
 echo "    tag: \"1.0.0\""
 echo ""
-echo "frontend:"
-echo "  image:"
-echo "    repository: tweetstream-frontend"
-echo "    tag: \"1.0.0\"" 
+echo "# Note: Frontend uses Python-based deployment (improved-frontend.yaml)"
+echo "# No Docker image needed for frontend" 

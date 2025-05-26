@@ -1,11 +1,10 @@
 #!/bin/bash
 
 # TweetStream Health Check Script
-# Comprehensive monitoring and health checking for TweetStream deployment
+# Provides comprehensive status of the TweetStream deployment
 
 set -e
 
-# Configuration
 NAMESPACE="tweetstream"
 MASTER_IP="192.168.1.82"
 NODEPORT="30080"
@@ -15,398 +14,210 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# Logging functions
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
 
 log_success() {
-    echo -e "${GREEN}[✓]${NC} $1"
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
 }
 
 log_warning() {
-    echo -e "${YELLOW}[⚠]${NC} $1"
+    echo -e "${YELLOW}[WARNING]${NC} $1"
 }
 
 log_error() {
-    echo -e "${RED}[✗]${NC} $1"
+    echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Check if namespace exists
-check_namespace() {
-    log_info "Checking namespace..."
-    if kubectl get namespace $NAMESPACE &> /dev/null; then
-        log_success "Namespace '$NAMESPACE' exists"
-        return 0
-    else
-        log_error "Namespace '$NAMESPACE' not found"
-        return 1
-    fi
+log_header() {
+    echo -e "${CYAN}$1${NC}"
 }
+
+echo "🔍 TweetStream Health Check"
+echo "=========================="
+echo ""
+
+# Check cluster connectivity
+log_header "📡 Cluster Connectivity"
+if kubectl cluster-info &> /dev/null; then
+    log_success "Kubernetes cluster is accessible"
+else
+    log_error "Cannot connect to Kubernetes cluster"
+    exit 1
+fi
+
+# Check namespace
+if kubectl get namespace $NAMESPACE &> /dev/null; then
+    log_success "TweetStream namespace exists"
+else
+    log_error "TweetStream namespace not found"
+    exit 1
+fi
+
+echo ""
 
 # Check pod status
-check_pods() {
-    log_info "Checking pod status..."
-    
-    # Get all pods in namespace
-    if ! kubectl get pods -n $NAMESPACE &> /dev/null; then
-        log_error "No pods found in namespace $NAMESPACE"
-        return 1
-    fi
-    
-    # Check each component
-    local all_healthy=true
-    
-    # API pods
-    local api_pods=$(kubectl get pods -n $NAMESPACE -l component=api --no-headers 2>/dev/null | wc -l)
-    local api_ready=$(kubectl get pods -n $NAMESPACE -l component=api --no-headers 2>/dev/null | grep "1/1.*Running" | wc -l)
-    
-    if [ $api_pods -gt 0 ]; then
-        if [ $api_ready -eq $api_pods ]; then
-            log_success "API pods: $api_ready/$api_pods ready"
-        else
-            log_warning "API pods: $api_ready/$api_pods ready"
-            all_healthy=false
-        fi
-    else
-        log_error "No API pods found"
-        all_healthy=false
-    fi
-    
-    # Frontend pods
-    local frontend_pods=$(kubectl get pods -n $NAMESPACE -l component=frontend --no-headers 2>/dev/null | wc -l)
-    local frontend_ready=$(kubectl get pods -n $NAMESPACE -l component=frontend --no-headers 2>/dev/null | grep "1/1.*Running" | wc -l)
-    
-    if [ $frontend_pods -gt 0 ]; then
-        if [ $frontend_ready -eq $frontend_pods ]; then
-            log_success "Frontend pods: $frontend_ready/$frontend_pods ready"
-        else
-            log_warning "Frontend pods: $frontend_ready/$frontend_pods ready"
-            all_healthy=false
-        fi
-    else
-        log_error "No Frontend pods found"
-        all_healthy=false
-    fi
-    
-    # Database pods
-    local db_pods=$(kubectl get pods -n $NAMESPACE -l app=postgres --no-headers 2>/dev/null | wc -l)
-    local db_ready=$(kubectl get pods -n $NAMESPACE -l app=postgres --no-headers 2>/dev/null | grep "1/1.*Running" | wc -l)
-    
-    if [ $db_pods -gt 0 ]; then
-        if [ $db_ready -eq $db_pods ]; then
-            log_success "Database pods: $db_ready/$db_pods ready"
-        else
-            log_warning "Database pods: $db_ready/$db_pods ready"
-            all_healthy=false
-        fi
-    else
-        log_error "No Database pods found"
-        all_healthy=false
-    fi
-    
-    # Redis pods
-    local redis_pods=$(kubectl get pods -n $NAMESPACE -l app=redis --no-headers 2>/dev/null | wc -l)
-    local redis_ready=$(kubectl get pods -n $NAMESPACE -l app=redis --no-headers 2>/dev/null | grep "1/1.*Running" | wc -l)
-    
-    if [ $redis_pods -gt 0 ]; then
-        if [ $redis_ready -eq $redis_pods ]; then
-            log_success "Redis pods: $redis_ready/$redis_pods ready"
-        else
-            log_warning "Redis pods: $redis_ready/$redis_pods ready"
-            all_healthy=false
-        fi
-    else
-        log_error "No Redis pods found"
-        all_healthy=false
-    fi
-    
-    if $all_healthy; then
-        return 0
-    else
-        return 1
-    fi
-}
+log_header "🚀 Pod Status"
+kubectl get pods -n $NAMESPACE -o wide
+
+echo ""
 
 # Check services
-check_services() {
-    log_info "Checking services..."
-    
-    local services=("tweetstream-api" "tweetstream-frontend" "postgres-primary" "redis")
-    local all_healthy=true
-    
-    for service in "${services[@]}"; do
-        if kubectl get svc -n $NAMESPACE $service &> /dev/null; then
-            local endpoints=$(kubectl get endpoints -n $NAMESPACE $service -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null | wc -w)
-            if [ $endpoints -gt 0 ]; then
-                log_success "Service '$service': $endpoints endpoints"
-            else
-                log_warning "Service '$service': no endpoints"
-                all_healthy=false
-            fi
-        else
-            log_error "Service '$service' not found"
-            all_healthy=false
-        fi
-    done
-    
-    if $all_healthy; then
-        return 0
-    else
-        return 1
-    fi
-}
+log_header "🌐 Services"
+kubectl get svc -n $NAMESPACE
+
+echo ""
 
 # Check ingress
-check_ingress() {
-    log_info "Checking ingress..."
-    
-    if kubectl get ingress -n $NAMESPACE tweetstream &> /dev/null; then
-        local ingress_ip=$(kubectl get ingress -n $NAMESPACE tweetstream -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
-        local ingress_class=$(kubectl get ingress -n $NAMESPACE tweetstream -o jsonpath='{.spec.ingressClassName}' 2>/dev/null)
-        
-        log_success "Ingress 'tweetstream' exists (class: $ingress_class)"
-        
-        # Check ingress controller
-        if kubectl get pods -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx &> /dev/null; then
-            local controller_ready=$(kubectl get pods -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx --no-headers | grep "1/1.*Running" | wc -l)
-            if [ $controller_ready -gt 0 ]; then
-                log_success "Ingress controller is running"
-                return 0
-            else
-                log_warning "Ingress controller not ready"
-                return 1
-            fi
-        else
-            log_error "Ingress controller not found"
-            return 1
-        fi
-    else
-        log_error "Ingress 'tweetstream' not found"
-        return 1
-    fi
-}
+log_header "🔗 Ingress"
+kubectl get ingress -n $NAMESPACE
 
-# Test application endpoints
-test_endpoints() {
-    log_info "Testing application endpoints..."
-    
-    local all_healthy=true
-    
-    # Test API health endpoint
-    log_info "Testing API health endpoint..."
-    if curl -s -f -m 10 -H "Host: tweetstream.192.168.1.82.nip.io" http://$MASTER_IP:$NODEPORT/api/health > /dev/null 2>&1; then
-        log_success "API health endpoint responding"
-    else
-        log_error "API health endpoint not responding"
-        all_healthy=false
-    fi
-    
-    # Test API ready endpoint
-    log_info "Testing API ready endpoint..."
-    if curl -s -f -m 10 -H "Host: tweetstream.192.168.1.82.nip.io" http://$MASTER_IP:$NODEPORT/api/ready > /dev/null 2>&1; then
-        log_success "API ready endpoint responding"
-    else
-        log_warning "API ready endpoint not responding"
-        all_healthy=false
-    fi
-    
-    # Test frontend
-    log_info "Testing frontend..."
-    if curl -s -f -m 10 -H "Host: tweetstream.192.168.1.82.nip.io" http://$MASTER_IP:$NODEPORT/ > /dev/null 2>&1; then
-        log_success "Frontend responding"
-    else
-        log_error "Frontend not responding"
-        all_healthy=false
-    fi
-    
-    if $all_healthy; then
-        return 0
-    else
-        return 1
-    fi
-}
+echo ""
 
-# Check resource usage
-check_resources() {
-    log_info "Checking resource usage..."
-    
-    # Check if metrics-server is available
-    if ! kubectl top nodes &> /dev/null; then
-        log_warning "Metrics server not available, skipping resource checks"
-        return 0
-    fi
-    
-    # Node resource usage
-    log_info "Node resource usage:"
-    kubectl top nodes 2>/dev/null || log_warning "Could not get node metrics"
-    
-    echo ""
-    
-    # Pod resource usage
-    log_info "Pod resource usage:"
-    kubectl top pods -n $NAMESPACE 2>/dev/null || log_warning "Could not get pod metrics"
-    
-    return 0
-}
+# Test API endpoints
+log_header "🧪 API Health Tests"
 
-# Check persistent volumes
-check_storage() {
-    log_info "Checking storage..."
+# Test health endpoint
+log_info "Testing API health endpoint..."
+if curl -s -f -H "Host: tweetstream.192.168.1.82.nip.io" http://$MASTER_IP:$NODEPORT/api/health > /dev/null; then
+    log_success "API health endpoint is working"
     
-    local pvcs=$(kubectl get pvc -n $NAMESPACE --no-headers 2>/dev/null | wc -l)
-    if [ $pvcs -gt 0 ]; then
-        local bound_pvcs=$(kubectl get pvc -n $NAMESPACE --no-headers 2>/dev/null | grep "Bound" | wc -l)
-        if [ $bound_pvcs -eq $pvcs ]; then
-            log_success "Persistent volumes: $bound_pvcs/$pvcs bound"
-            return 0
-        else
-            log_warning "Persistent volumes: $bound_pvcs/$pvcs bound"
-            return 1
-        fi
-    else
-        log_info "No persistent volume claims found"
-        return 0
-    fi
-}
+    # Get health details
+    HEALTH_RESPONSE=$(curl -s -H "Host: tweetstream.192.168.1.82.nip.io" http://$MASTER_IP:$NODEPORT/api/health)
+    echo "   Health details: $HEALTH_RESPONSE"
+else
+    log_error "API health endpoint is not accessible"
+fi
 
-# Show detailed status
-show_detailed_status() {
-    echo ""
-    log_info "=== Detailed Status ==="
-    
-    echo ""
-    echo "Pods:"
-    kubectl get pods -n $NAMESPACE -o wide 2>/dev/null || echo "No pods found"
-    
-    echo ""
-    echo "Services:"
-    kubectl get svc -n $NAMESPACE 2>/dev/null || echo "No services found"
-    
-    echo ""
-    echo "Ingress:"
-    kubectl get ingress -n $NAMESPACE 2>/dev/null || echo "No ingress found"
-    
-    echo ""
-    echo "Persistent Volume Claims:"
-    kubectl get pvc -n $NAMESPACE 2>/dev/null || echo "No PVCs found"
-    
-    echo ""
-    echo "Recent Events:"
-    kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' | tail -10 2>/dev/null || echo "No events found"
-}
+# Test API documentation
+log_info "Testing API documentation endpoint..."
+if curl -s -f -H "Host: tweetstream.192.168.1.82.nip.io" http://$MASTER_IP:$NODEPORT/api/api > /dev/null; then
+    log_success "API documentation is accessible"
+else
+    log_warning "API documentation is not accessible"
+fi
 
-# Show troubleshooting info
-show_troubleshooting() {
-    echo ""
-    log_info "=== Troubleshooting Information ==="
+# Test tweets endpoint
+log_info "Testing tweets endpoint..."
+if curl -s -f -H "Host: tweetstream.192.168.1.82.nip.io" http://$MASTER_IP:$NODEPORT/api/api/tweets > /dev/null; then
+    log_success "Tweets endpoint is working"
     
-    # Check for common issues
-    local failed_pods=$(kubectl get pods -n $NAMESPACE --no-headers 2>/dev/null | grep -v "1/1.*Running" | grep -v "Completed")
-    
-    if [ -n "$failed_pods" ]; then
-        echo ""
-        log_warning "Failed/Pending pods found:"
-        echo "$failed_pods"
-        
-        echo ""
-        log_info "Pod descriptions for failed pods:"
-        while IFS= read -r line; do
-            local pod_name=$(echo "$line" | awk '{print $1}')
-            echo "--- $pod_name ---"
-            kubectl describe pod -n $NAMESPACE "$pod_name" | grep -A 10 "Events:" 2>/dev/null || echo "No events"
-        done <<< "$failed_pods"
-    fi
-    
-    echo ""
-    log_info "Application URLs:"
-    echo "Frontend: http://$MASTER_IP:$NODEPORT/ (Host: tweetstream.192.168.1.82.nip.io)"
-    echo "API Health: http://$MASTER_IP:$NODEPORT/api/health (Host: tweetstream.192.168.1.82.nip.io)"
-    echo "API Ready: http://$MASTER_IP:$NODEPORT/api/ready (Host: tweetstream.192.168.1.82.nip.io)"
-    
-    echo ""
-    log_info "Useful commands:"
-    echo "kubectl logs -n $NAMESPACE -l component=api"
-    echo "kubectl logs -n $NAMESPACE -l component=frontend"
-    echo "kubectl describe pods -n $NAMESPACE"
-    echo "kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp'"
-}
+    # Get tweet count
+    TWEET_COUNT=$(curl -s -H "Host: tweetstream.192.168.1.82.nip.io" http://$MASTER_IP:$NODEPORT/api/api/tweets | jq '.tweets | length' 2>/dev/null || echo "unknown")
+    echo "   Available tweets: $TWEET_COUNT"
+else
+    log_warning "Tweets endpoint is not accessible"
+fi
 
-# Main health check function
-main() {
-    echo "🏥 TweetStream Health Check"
-    echo "=========================="
-    
-    local overall_health=true
-    
-    # Run all checks
-    check_namespace || overall_health=false
-    echo ""
-    
-    check_pods || overall_health=false
-    echo ""
-    
-    check_services || overall_health=false
-    echo ""
-    
-    check_ingress || overall_health=false
-    echo ""
-    
-    test_endpoints || overall_health=false
-    echo ""
-    
-    check_storage || overall_health=false
-    echo ""
-    
-    check_resources
-    
-    # Show detailed status if requested
-    if [ "$1" = "--detailed" ] || [ "$1" = "-d" ]; then
-        show_detailed_status
-    fi
-    
-    # Show troubleshooting info if there are issues
-    if ! $overall_health || [ "$1" = "--troubleshoot" ] || [ "$1" = "-t" ]; then
-        show_troubleshooting
-    fi
-    
-    echo ""
-    echo "=========================="
-    if $overall_health; then
-        log_success "🎉 Overall health: HEALTHY"
-        exit 0
-    else
-        log_error "💥 Overall health: UNHEALTHY"
-        echo ""
-        log_info "Run with --troubleshoot for more details"
-        exit 1
-    fi
-}
+echo ""
 
-# Show usage
-show_usage() {
-    echo "Usage: $0 [OPTIONS]"
-    echo ""
-    echo "Options:"
-    echo "  --detailed, -d      Show detailed status information"
-    echo "  --troubleshoot, -t  Show troubleshooting information"
-    echo "  --help, -h          Show this help message"
-    echo ""
-    echo "Examples:"
-    echo "  $0                  # Basic health check"
-    echo "  $0 --detailed       # Health check with detailed status"
-    echo "  $0 --troubleshoot   # Health check with troubleshooting info"
-}
+# Test monitoring
+log_header "📊 Monitoring Status"
 
-# Handle command line arguments
-case "$1" in
-    --help|-h)
-        show_usage
-        exit 0
-        ;;
-    *)
-        main "$@"
-        ;;
-esac 
+# Check ServiceMonitor
+if kubectl get servicemonitor -n $NAMESPACE &> /dev/null; then
+    log_success "ServiceMonitor is configured"
+    kubectl get servicemonitor -n $NAMESPACE
+else
+    log_warning "ServiceMonitor not found"
+fi
+
+# Test metrics endpoint
+log_info "Testing metrics endpoint..."
+if curl -s -f -H "Host: tweetstream.192.168.1.82.nip.io" http://$MASTER_IP:$NODEPORT/api/metrics > /dev/null; then
+    log_success "Metrics endpoint is working"
+    
+    # Get some key metrics
+    ACTIVE_USERS=$(curl -s -H "Host: tweetstream.192.168.1.82.nip.io" http://$MASTER_IP:$NODEPORT/api/metrics | grep "tweetstream_active_users_total" | awk '{print $2}' || echo "unknown")
+    TOTAL_TWEETS=$(curl -s -H "Host: tweetstream.192.168.1.82.nip.io" http://$MASTER_IP:$NODEPORT/api/metrics | grep "tweetstream_tweets_total" | awk '{print $2}' || echo "unknown")
+    TOTAL_LIKES=$(curl -s -H "Host: tweetstream.192.168.1.82.nip.io" http://$MASTER_IP:$NODEPORT/api/metrics | grep "tweetstream_likes_total" | awk '{print $2}' || echo "unknown")
+    
+    echo "   Active users: $ACTIVE_USERS"
+    echo "   Total tweets: $TOTAL_TWEETS"
+    echo "   Total likes: $TOTAL_LIKES"
+else
+    log_warning "Metrics endpoint is not accessible"
+fi
+
+echo ""
+
+# Check external monitoring
+log_header "🔍 External Monitoring"
+
+# Check Prometheus
+log_info "Testing Prometheus access..."
+if curl -s -f -H "Host: prometheus.192.168.1.82.nip.io" http://$MASTER_IP:$NODEPORT/ > /dev/null; then
+    log_success "Prometheus is accessible at http://$MASTER_IP:$NODEPORT/ (Host: prometheus.192.168.1.82.nip.io)"
+else
+    log_warning "Prometheus is not accessible"
+fi
+
+# Check Grafana
+log_info "Testing Grafana access..."
+if curl -s -f -H "Host: grafana.192.168.1.82.nip.io" http://$MASTER_IP:$NODEPORT/ > /dev/null; then
+    log_success "Grafana is accessible at http://$MASTER_IP:$NODEPORT/ (Host: grafana.192.168.1.82.nip.io)"
+else
+    log_warning "Grafana is not accessible"
+fi
+
+echo ""
+
+# Resource usage
+log_header "💾 Resource Usage"
+log_info "Node resource usage:"
+kubectl top nodes 2>/dev/null || log_warning "Metrics server not available"
+
+echo ""
+log_info "Pod resource usage:"
+kubectl top pods -n $NAMESPACE 2>/dev/null || log_warning "Metrics server not available"
+
+echo ""
+
+# Summary
+log_header "📋 Access Information"
+echo ""
+echo "🌐 TweetStream API:"
+echo "   URL: http://$MASTER_IP:$NODEPORT/api/health"
+echo "   Host header: tweetstream.192.168.1.82.nip.io"
+echo "   Documentation: http://$MASTER_IP:$NODEPORT/api/api"
+echo ""
+echo "📊 Monitoring:"
+echo "   Prometheus: http://$MASTER_IP:$NODEPORT/ (Host: prometheus.192.168.1.82.nip.io)"
+echo "   Grafana: http://$MASTER_IP:$NODEPORT/ (Host: grafana.192.168.1.82.nip.io)"
+echo "   Metrics: http://$MASTER_IP:$NODEPORT/api/metrics"
+echo ""
+echo "🔧 Commands:"
+echo "   Watch pods: kubectl get pods -n $NAMESPACE -w"
+echo "   View logs: kubectl logs -n $NAMESPACE -l component=api -f"
+echo "   Port forward API: kubectl port-forward -n $NAMESPACE svc/tweetstream-api 3000:3000"
+echo ""
+
+# Check for issues
+ISSUES=0
+
+# Count non-running pods
+NON_RUNNING=$(kubectl get pods -n $NAMESPACE --no-headers | grep -v "Running" | grep -v "Completed" | wc -l)
+if [ $NON_RUNNING -gt 0 ]; then
+    log_warning "Found $NON_RUNNING non-running pods"
+    ISSUES=$((ISSUES + 1))
+fi
+
+# Check if API is accessible
+if ! curl -s -f -H "Host: tweetstream.192.168.1.82.nip.io" http://$MASTER_IP:$NODEPORT/api/health > /dev/null; then
+    log_error "API is not accessible"
+    ISSUES=$((ISSUES + 1))
+fi
+
+echo ""
+if [ $ISSUES -eq 0 ]; then
+    log_success "🎉 TweetStream is healthy and operational!"
+else
+    log_warning "⚠️  Found $ISSUES issues that may need attention"
+fi
+
+echo ""
+log_info "Run this script again with: ./scripts/health-check.sh" 

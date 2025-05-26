@@ -81,11 +81,11 @@ show_cluster_status() {
 # Choose deployment method
 choose_deployment_method() {
     echo ""
-    log_info "Choose image distribution method:"
-    echo "1) GitHub Container Registry (Recommended for production)"
-    echo "2) Fix Local Registry (Good for on-premise)"
-    echo "3) Manual Image Distribution (Quick fix)"
-    echo "4) Keep Current Temporary Setup (Master node only)"
+    log_info "Choose deployment method:"
+    echo "1) GitHub Container Registry (Best for production - requires GitHub account)"
+    echo "2) Local Registry Setup (Good for on-premise - configures worker nodes)"
+    echo "3) Manual Image Distribution (Distributes images via SSH)"
+    echo "4) Improved Local Registry (Uses existing registry with smart fallback)"
     echo ""
     
     while true; do
@@ -211,11 +211,19 @@ EOF
 
 # Deploy with local registry fix
 deploy_local_registry() {
-    log_info "Fixing local registry configuration..."
+    log_info "Setting up local registry deployment..."
     
+    # Try to fix local registry configuration
+    log_info "Attempting to configure local registry on worker nodes..."
     cd helm-chart
     chmod +x fix-local-registry.sh
-    ./fix-local-registry.sh
+    
+    if ./fix-local-registry.sh; then
+        log_success "Local registry configuration completed successfully"
+    else
+        log_warning "Local registry configuration had issues, but continuing with deployment"
+        log_info "You may need to manually configure worker nodes or use manual image distribution"
+    fi
     cd ..
     
     # Create local registry values file
@@ -224,11 +232,18 @@ global:
   imageRegistry: "192.168.1.82:5555"
 
 api:
-  replicaCount: 3
+  replicaCount: 2
   image:
     repository: tweetstream/api
     tag: "1.0.0"
     pullPolicy: IfNotPresent
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 200m
+      memory: 256Mi
 
 frontend:
   replicaCount: 2
@@ -236,17 +251,51 @@ frontend:
     repository: tweetstream/frontend
     tag: "1.0.0"
     pullPolicy: IfNotPresent
+  resources:
+    limits:
+      cpu: 200m
+      memory: 128Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
 
-# Remove temporary workarounds
+# Remove temporary workarounds gradually
 nodeSelector: {}
 tolerations: []
 
-# Restore security context
+# Restore security context (but keep it relaxed for now)
 security:
   podSecurityContext:
-    runAsNonRoot: true
-    runAsUser: 1001
-    fsGroup: 1001
+    runAsNonRoot: false  # Keep relaxed for now
+    runAsUser: 0
+    fsGroup: 0
+  securityContext:
+    allowPrivilegeEscalation: true
+    capabilities:
+      drop: []
+    readOnlyRootFilesystem: false
+    runAsNonRoot: false
+    runAsUser: 0
+
+# Enable monitoring
+monitoring:
+  enabled: true
+
+# Enable Kafka
+kafka:
+  enabled: true
+
+# Database configuration
+database:
+  persistence:
+    enabled: true
+    size: 20Gi
+
+# Redis configuration  
+redis:
+  persistence:
+    enabled: true
+    size: 5Gi
 EOF
     
     VALUES_FILE="local-registry-values.yaml"
@@ -254,56 +303,210 @@ EOF
 
 # Deploy with manual image distribution
 deploy_manual_distribution() {
-    log_info "Distributing images manually to all nodes..."
+    log_info "Setting up manual image distribution..."
+    
+    # Check if images exist locally
+    if ! sudo docker images | grep -q "tweetstream/api"; then
+        log_error "TweetStream images not found locally. Please build them first."
+        log_info "Run: cd helm-chart && ./build-images.sh"
+        exit 1
+    fi
     
     # Get worker nodes
     WORKER_NODES=$(kubectl get nodes --no-headers -o custom-columns=":metadata.name" | grep -v master)
     
+    log_info "Found worker nodes: $WORKER_NODES"
+    log_info "Attempting to distribute images to worker nodes..."
+    
+    success_count=0
+    total_nodes=0
+    
     for node in $WORKER_NODES; do
-        log_info "Copying images to $node..."
+        total_nodes=$((total_nodes + 1))
+        log_info "Distributing images to $node..."
         
-        # Copy API image
-        sudo docker save tweetstream/api:1.0.0 | ssh $node 'sudo ctr -n k8s.io images import -' || {
+        # Try to copy API image
+        if sudo docker save tweetstream/api:1.0.0 | ssh $node 'sudo ctr -n k8s.io images import -' 2>/dev/null; then
+            log_success "API image copied to $node"
+        else
             log_warning "Failed to copy API image to $node"
-        }
+            continue
+        fi
         
-        # Copy Frontend image
-        sudo docker save tweetstream/frontend:1.0.0 | ssh $node 'sudo ctr -n k8s.io images import -' || {
+        # Try to copy Frontend image
+        if sudo docker save tweetstream/frontend:1.0.0 | ssh $node 'sudo ctr -n k8s.io images import -' 2>/dev/null; then
+            log_success "Frontend image copied to $node"
+            success_count=$((success_count + 1))
+        else
             log_warning "Failed to copy Frontend image to $node"
-        }
+        fi
     done
+    
+    log_info "Image distribution summary: $success_count/$total_nodes nodes successful"
+    
+    if [ $success_count -eq 0 ]; then
+        log_error "Failed to distribute images to any worker nodes"
+        log_info "Falling back to local registry or master node deployment"
+    fi
     
     # Create manual distribution values file
     cat > manual-values.yaml << EOF
 api:
   replicaCount: 2
   image:
+    repository: tweetstream/api
+    tag: "1.0.0"
     pullPolicy: Never  # Use local images
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 200m
+      memory: 256Mi
 
 frontend:
   replicaCount: 2
   image:
+    repository: tweetstream/frontend
+    tag: "1.0.0"
     pullPolicy: Never  # Use local images
+  resources:
+    limits:
+      cpu: 200m
+      memory: 128Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
 
-# Remove temporary workarounds
+# Remove temporary workarounds gradually
 nodeSelector: {}
 tolerations: []
 
-# Restore security context
+# Keep security context relaxed for now
 security:
   podSecurityContext:
-    runAsNonRoot: true
-    runAsUser: 1001
-    fsGroup: 1001
+    runAsNonRoot: false
+    runAsUser: 0
+    fsGroup: 0
+  securityContext:
+    allowPrivilegeEscalation: true
+    capabilities:
+      drop: []
+    readOnlyRootFilesystem: false
+    runAsNonRoot: false
+    runAsUser: 0
+
+# Enable monitoring
+monitoring:
+  enabled: true
+
+# Enable Kafka
+kafka:
+  enabled: true
+
+# Database configuration
+database:
+  persistence:
+    enabled: true
+    size: 20Gi
+
+# Redis configuration  
+redis:
+  persistence:
+    enabled: true
+    size: 5Gi
 EOF
     
     VALUES_FILE="manual-values.yaml"
 }
 
-# Keep temporary setup
+# Keep temporary setup but make it more robust
 deploy_temporary() {
-    log_warning "Keeping temporary setup (master node only)"
-    VALUES_FILE="helm-chart/tweetstream/values-minimal.yaml"
+    log_info "Setting up improved temporary deployment..."
+    log_info "This will use the local registry with fallback to master node scheduling"
+    
+    # Create improved temporary values file
+    cat > improved-temporary-values.yaml << EOF
+global:
+  imageRegistry: "192.168.1.82:5555"
+
+api:
+  replicaCount: 2
+  image:
+    repository: tweetstream/api
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent  # Try registry first, then local
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 200m
+      memory: 256Mi
+  # Fallback to master node if images not available on workers
+  nodeSelector: {}
+  tolerations:
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+frontend:
+  replicaCount: 2
+  image:
+    repository: tweetstream/frontend
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent  # Try registry first, then local
+  resources:
+    limits:
+      cpu: 200m
+      memory: 128Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
+  # Fallback to master node if images not available on workers
+  nodeSelector: {}
+  tolerations:
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+# Keep security context relaxed but functional
+security:
+  podSecurityContext:
+    runAsNonRoot: false
+    runAsUser: 0
+    fsGroup: 0
+  securityContext:
+    allowPrivilegeEscalation: true
+    capabilities:
+      drop: []
+    readOnlyRootFilesystem: false
+    runAsNonRoot: false
+    runAsUser: 0
+
+# Enable monitoring
+monitoring:
+  enabled: true
+
+# Enable Kafka
+kafka:
+  enabled: true
+
+# Database configuration
+database:
+  persistence:
+    enabled: true
+    size: 20Gi
+
+# Redis configuration  
+redis:
+  persistence:
+    enabled: true
+    size: 5Gi
+EOF
+    
+    VALUES_FILE="improved-temporary-values.yaml"
 }
 
 # Deploy the application

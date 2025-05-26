@@ -1,0 +1,46 @@
+---
+- name: Configure Docker Registry on All Nodes
+  hosts: all
+  become: yes
+  tasks:
+    - name: Create Docker directory
+      file:
+        path: /etc/docker
+        state: directory
+        mode: '0755'
+
+    - name: Configure Docker daemon for insecure registry
+      copy:
+        content: |
+          {
+            "insecure-registries": ["192.168.1.82:5555"],
+            "log-driver": "json-file",
+            "log-opts": {
+              "max-size": "10m",
+              "max-file": "3"
+            }
+          }
+        dest: /etc/docker/daemon.json
+        mode: '0644'
+      notify: restart docker
+
+    - name: Ensure Docker is started and enabled
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Test registry connectivity
+      shell: "docker pull 192.168.1.82:5555/tweetstream/api:1.0.0"
+      register: pull_result
+      ignore_errors: yes
+
+    - name: Display pull result
+      debug:
+        msg: "Registry pull test: {{ 'SUCCESS' if pull_result.rc == 0 else 'FAILED' }}"
+
+  handlers:
+    - name: restart docker
+      systemd:
+        name: docker
+        state: restarted
