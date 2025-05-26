@@ -66,33 +66,33 @@ Create the name of the service account to use
 Database connection string
 */}}
 {{- define "tweetstream.databaseUrl" -}}
-{{- if .Values.database.enabled }}
+{{- if .Values.database.enabled -}}
 postgresql://{{ .Values.database.auth.username }}:{{ .Values.database.auth.password }}@{{ .Values.database.name }}:{{ .Values.database.service.port }}/{{ .Values.database.auth.database }}
-{{- else }}
+{{- else -}}
 {{- .Values.externalDatabase.url }}
-{{- end }}
+{{- end -}}
 {{- end }}
 
 {{/*
 Redis connection string
 */}}
 {{- define "tweetstream.redisUrl" -}}
-{{- if .Values.redis.enabled }}
+{{- if .Values.redis.enabled -}}
 redis://{{ .Values.redis.name }}:{{ .Values.redis.service.port }}
-{{- else }}
+{{- else -}}
 {{- .Values.externalRedis.url }}
-{{- end }}
+{{- end -}}
 {{- end }}
 
 {{/*
 Kafka connection string
 */}}
 {{- define "tweetstream.kafkaUrl" -}}
-{{- if .Values.kafka.enabled }}
-{{ .Values.kafka.name }}:{{ .Values.kafka.service.port }}
-{{- else }}
+{{- if .Values.kafka.enabled -}}
+{{ include "tweetstream.fullname" . }}-kafka:{{ .Values.kafka.service.port }}
+{{- else -}}
 {{- .Values.externalKafka.url }}
-{{- end }}
+{{- end -}}
 {{- end }}
 
 {{/*

@@ -4,23 +4,23 @@
 api:
   image:
     repository: 192.168.1.82:5555/tweetstream/api
-    tag: "1.0.0"
-    pullPolicy: IfNotPresent
+    tag: "1.1.0"
+    pullPolicy: Always
   replicaCount: 3
   resources:
     limits:
-      cpu: 200m
+      cpu: 150m
       memory: 256Mi
     requests:
-      cpu: 100m
+      cpu: 50m
       memory: 128Mi
 
 frontend:
   enabled: true
   image:
     repository: 192.168.1.82:5555/tweetstream/frontend
-    tag: "2.2.0"
-    pullPolicy: IfNotPresent
+    tag: "2.3.0"
+    pullPolicy: Always
   replicaCount: 2
   service:
     targetPort: 8080  # Our frontend runs on port 8080
@@ -72,7 +72,8 @@ ingress:
   enabled: true
   className: nginx
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/rewrite-target: ""
   hosts:
   - host: tweetstream.192.168.1.82.nip.io
     paths:
@@ -81,14 +82,34 @@ ingress:
       service:
         name: tweetstream-frontend
         port: 80
-    - path: /api(/|$)(.*)
-      pathType: ImplementationSpecific
+    - path: /api
+      pathType: Prefix
       service:
         name: tweetstream-api
         port: 3000
 
 kafka:
-  enabled: false
+  enabled: true
+  name: kafka
+  image:
+    repository: confluentinc/cp-kafka
+    tag: "7.4.0"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 9092
+    controllerPort: 9093
+  persistence:
+    enabled: true
+    storageClass: "local-path"
+    size: 5Gi
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 200m
+      memory: 512Mi
 
 monitoring:
   enabled: true
@@ -105,11 +126,7 @@ security:
       drop:
       - ALL
 
-# Node scheduling for master node
-nodeSelector:
-  kubernetes.io/hostname: master-node
+# Allow scheduling on any node
+nodeSelector: {}
 
-tolerations:
-- effect: NoSchedule
-  key: node-role.kubernetes.io/control-plane
-  operator: Exists 
+tolerations: [] 

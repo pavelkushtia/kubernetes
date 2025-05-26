@@ -6,7 +6,7 @@
 set -e
 
 # Configuration
-GITHUB_USERNAME="your-github-username"  # Replace with your GitHub username
+GITHUB_USERNAME="pavelkushtia"  # Replace with your GitHub username
 REGISTRY="ghcr.io"
 NAMESPACE="$GITHUB_USERNAME"
 
