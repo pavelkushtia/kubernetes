@@ -34,6 +34,39 @@
             border-bottom: 1px solid #38444d;
         }
 
+        .header-center {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+        }
+
+        .connection-status {
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .connection-status.connected {
+            background: rgba(29, 161, 242, 0.1);
+            color: #1da1f2;
+            border: 1px solid #1da1f2;
+        }
+
+        .connection-status.disconnected {
+            background: rgba(255, 173, 31, 0.1);
+            color: #ffad1f;
+            border: 1px solid #ffad1f;
+        }
+
+        .connection-status.error {
+            background: rgba(249, 24, 128, 0.1);
+            color: #f91880;
+            border: 1px solid #f91880;
+        }
+
         .logo {
             display: flex;
             align-items: center;
@@ -484,6 +517,52 @@
                 font-size: 12px;
             }
         }
+
+        /* Notification styles */
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 15px 20px;
+            border-radius: 8px;
+            color: white;
+            font-weight: bold;
+            z-index: 1000;
+            animation: slideIn 0.3s ease-out;
+            max-width: 300px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+
+        .notification.info {
+            background: #1da1f2;
+        }
+
+        .notification.success {
+            background: #17bf63;
+        }
+
+        .notification.warning {
+            background: #ffad1f;
+        }
+
+        .notification.error {
+            background: #f91880;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .modal.hidden {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -493,6 +572,9 @@
             <div class="logo">
                 <h1>🐦 TweetStream</h1>
                 <span style="color: #8899a6;">Social Media Platform</span>
+            </div>
+            <div class="header-center">
+                <div class="connection-status" id="connectionStatus">🔴 Offline</div>
             </div>
             <div class="user-info" id="userInfo" style="display: none;">
                 <div class="user-avatar" id="userAvatar">U</div>
@@ -1130,6 +1212,188 @@
             document.getElementById('userModal').classList.add('hidden');
         }
 
+        // WebSocket functionality for real-time updates
+        let socket = null;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+
+        function initWebSocket() {
+            try {
+                // Connect to WebSocket server
+                socket = io(window.location.origin, {
+                    transports: ['websocket', 'polling'],
+                    timeout: 20000,
+                    forceNew: true
+                });
+
+                socket.on('connect', () => {
+                    console.log('WebSocket connected');
+                    reconnectAttempts = 0;
+                    
+                    // Authenticate if user is logged in
+                    if (authToken) {
+                        socket.emit('authenticate', authToken);
+                        socket.emit('join_feed');
+                    }
+                    
+                    showConnectionStatus('connected');
+                });
+
+                socket.on('authenticated', (data) => {
+                    if (data.success) {
+                        console.log('WebSocket authenticated for user:', data.userId);
+                    } else {
+                        console.error('WebSocket authentication failed:', data.error);
+                    }
+                });
+
+                socket.on('disconnect', () => {
+                    console.log('WebSocket disconnected');
+                    showConnectionStatus('disconnected');
+                    
+                    // Attempt to reconnect
+                    if (reconnectAttempts < maxReconnectAttempts) {
+                        setTimeout(() => {
+                            reconnectAttempts++;
+                            console.log(`Reconnection attempt ${reconnectAttempts}/${maxReconnectAttempts}`);
+                            initWebSocket();
+                        }, 2000 * reconnectAttempts);
+                    }
+                });
+
+                // Real-time tweet events
+                socket.on('new_tweet', (tweet) => {
+                    console.log('New tweet received:', tweet);
+                    // Add new tweet to the beginning of the feed
+                    tweets.unshift(tweet);
+                    renderTweets();
+                    loadStats(); // Update stats
+                    showNotification('New tweet posted!', 'info');
+                });
+
+                socket.on('follower_tweet', (tweet) => {
+                    console.log('Follower tweet received:', tweet);
+                    // Add follower's tweet with special styling
+                    tweets.unshift(tweet);
+                    renderTweets();
+                    showNotification(`New tweet from @${tweet.username}`, 'info');
+                });
+
+                socket.on('tweet_updated', (data) => {
+                    console.log('Tweet updated:', data);
+                    // Update specific tweet in the feed
+                    const tweet = tweets.find(t => t.id === data.tweet_id);
+                    if (tweet) {
+                        if (data.type === 'tweet_liked' || data.type === 'tweet_unliked') {
+                            tweet.likes_count = data.likes_count;
+                        } else if (data.type === 'tweet_retweeted' || data.type === 'tweet_unretweeted') {
+                            tweet.retweets_count = data.retweets_count;
+                        }
+                        renderTweets();
+                    }
+                });
+
+                // Real-time follow events
+                socket.on('follower_update', (data) => {
+                    console.log('Follower update:', data);
+                    if (data.type === 'user_followed') {
+                        showNotification('You have a new follower!', 'success');
+                    }
+                    loadStats(); // Update follower count
+                });
+
+                socket.on('following_update', (data) => {
+                    console.log('Following update:', data);
+                    loadSuggestedUsers(); // Refresh suggested users
+                });
+
+                socket.on('like_update', (data) => {
+                    console.log('Like update:', data);
+                    // Real-time like animation could be added here
+                });
+
+                socket.on('new_user', (user) => {
+                    console.log('New user registered:', user);
+                    loadSuggestedUsers(); // Refresh suggested users
+                    loadStats(); // Update user count
+                });
+
+                socket.on('connect_error', (error) => {
+                    console.error('WebSocket connection error:', error);
+                    showConnectionStatus('error');
+                });
+
+            } catch (error) {
+                console.error('WebSocket initialization error:', error);
+                showConnectionStatus('error');
+            }
+        }
+
+        function showConnectionStatus(status) {
+            const statusElement = document.getElementById('connectionStatus');
+            if (!statusElement) return;
+
+            statusElement.className = `connection-status ${status}`;
+            switch (status) {
+                case 'connected':
+                    statusElement.textContent = '🟢 Live';
+                    statusElement.title = 'Real-time updates active';
+                    break;
+                case 'disconnected':
+                    statusElement.textContent = '🟡 Reconnecting...';
+                    statusElement.title = 'Attempting to reconnect';
+                    break;
+                case 'error':
+                    statusElement.textContent = '🔴 Offline';
+                    statusElement.title = 'Real-time updates unavailable';
+                    break;
+            }
+        }
+
+        function showNotification(message, type = 'info') {
+            // Create notification element
+            const notification = document.createElement('div');
+            notification.className = `notification ${type}`;
+            notification.textContent = message;
+            
+            // Add to page
+            document.body.appendChild(notification);
+            
+            // Auto-remove after 3 seconds
+            setTimeout(() => {
+                notification.remove();
+            }, 3000);
+        }
+
+        // Enhanced authentication to include WebSocket
+        function enhancedShowMainApp() {
+            showMainApp();
+            
+            // Initialize WebSocket connection
+            if (!socket || socket.disconnected) {
+                initWebSocket();
+            } else if (authToken) {
+                socket.emit('authenticate', authToken);
+                socket.emit('join_feed');
+            }
+        }
+
+        function enhancedLogout() {
+            // Disconnect WebSocket
+            if (socket) {
+                socket.emit('leave_feed');
+                socket.disconnect();
+                socket = null;
+            }
+            logout();
+        }
+
+        // Override original functions
+        const originalShowMainApp = showMainApp;
+        const originalLogout = logout;
+        showMainApp = enhancedShowMainApp;
+        logout = enhancedLogout;
+
         // Keyboard shortcuts
         document.addEventListener('keydown', function(e) {
             // Ctrl/Cmd + Enter to tweet
@@ -1141,5 +1405,8 @@
             }
         });
     </script>
+    
+    <!-- Socket.IO Client Library -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 </body>
 </html> 

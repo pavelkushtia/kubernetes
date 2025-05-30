@@ -4,7 +4,7 @@
 # Global settings
 global:
   environment: production
-  imageRegistry: ""
+  imageRegistry: "192.168.1.82:5555"
   storageClass: "local-path"
 
 # API Service - Full production setup

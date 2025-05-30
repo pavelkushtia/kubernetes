@@ -27,6 +27,29 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.kafka.persistence.enabled }}
+      initContainers:
+      - name: kafka-init
+        image: "{{ .Values.kafka.image.repository }}:{{ .Values.kafka.image.tag }}"
+        command:
+        - /bin/bash
+        - -c
+        - |
+          if [ ! -f /var/lib/kafka/data/meta.properties ]; then
+            echo "Formatting Kafka storage..."
+            kafka-storage format --config /etc/kafka/kafka.properties --cluster-id 4L6g3nShT-eMCtK--X86sw --ignore-formatted
+          else
+            echo "Kafka storage already formatted, skipping..."
+          fi
+        env:
+        - name: CLUSTER_ID
+          value: "4L6g3nShT-eMCtK--X86sw"
+        - name: KAFKA_NODE_ID
+          value: "1"
+        volumeMounts:
+        - name: kafka-data
+          mountPath: /var/lib/kafka/data
+      {{- end }}
       containers:
       - name: kafka
         image: "{{ .Values.kafka.image.repository }}:{{ .Values.kafka.image.tag }}"
@@ -42,11 +65,11 @@ spec:
         - name: KAFKA_NODE_ID
           value: "1"
         - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
-          value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+          value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
         - name: KAFKA_ADVERTISED_LISTENERS
-          value: "PLAINTEXT_HOST://localhost:9092,PLAINTEXT://{{ include "tweetstream.fullname" . }}-kafka:29092"
+          value: "PLAINTEXT://{{ include "tweetstream.fullname" . }}-kafka:9092"
         - name: KAFKA_LISTENERS
-          value: "PLAINTEXT_HOST://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT://0.0.0.0:29092"
+          value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
         - name: KAFKA_INTER_BROKER_LISTENER_NAME
           value: "PLAINTEXT"
         - name: KAFKA_CONTROLLER_LISTENER_NAMES
@@ -65,6 +88,10 @@ spec:
           value: "0"
         - name: KAFKA_NUM_PARTITIONS
           value: "3"
+        - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+          value: "true"
+        - name: KAFKA_DELETE_TOPIC_ENABLE
+          value: "true"
         {{- if .Values.kafka.persistence.enabled }}
         - name: KAFKA_LOG_DIRS
           value: "/var/lib/kafka/data"
@@ -77,13 +104,17 @@ spec:
         livenessProbe:
           tcpSocket:
             port: 9092
-          initialDelaySeconds: 30
+          initialDelaySeconds: 60
           periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
         readinessProbe:
           tcpSocket:
             port: 9092
-          initialDelaySeconds: 10
+          initialDelaySeconds: 30
           periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 6
       {{- if .Values.kafka.persistence.enabled }}
       volumes:
       - name: kafka-data

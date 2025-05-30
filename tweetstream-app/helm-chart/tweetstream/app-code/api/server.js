@@ -11,8 +11,17 @@ const redis = require('redis');
 const { Kafka } = require('kafkajs');
 const promClient = require('prom-client');
 const { body, validationResult } = require('express-validator');
+const http = require('http');
+const { Server } = require('socket.io');
 
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: process.env.FRONTEND_URL || "*",
+    methods: ["GET", "POST"]
+  }
+});
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'tweetstream-secret-key-change-in-production';
 
@@ -23,7 +32,10 @@ const kafka = new Kafka({
   retry: {
     initialRetryTime: 100,
     retries: 8
-  }
+  },
+  connectionTimeout: 3000,
+  requestTimeout: 30000,
+  enforceRequestTimeout: true
 });
 
 const producer = kafka.producer();
@@ -33,6 +45,7 @@ const consumer = kafka.consumer({ groupId: 'tweetstream-api-group' });
 let kafkaConnected = false;
 async function initKafka() {
   try {
+    console.log('Connecting to Kafka brokers:', process.env.KAFKA_BROKERS || process.env.KAFKA_BROKER || 'tweetstream-kafka:9092');
     await producer.connect();
     await consumer.connect();
     
@@ -40,12 +53,93 @@ async function initKafka() {
     await consumer.subscribe({ topic: 'tweets', fromBeginning: false });
     await consumer.subscribe({ topic: 'follows', fromBeginning: false });
     await consumer.subscribe({ topic: 'likes', fromBeginning: false });
+    await consumer.subscribe({ topic: 'users', fromBeginning: false });
+    
+    // Start consuming messages
+    await consumer.run({
+      eachMessage: async ({ topic, partition, message }) => {
+        try {
+          const data = JSON.parse(message.value.toString());
+          console.log(`Received ${topic} event:`, data.type);
+          
+          // Emit real-time updates via WebSocket
+          switch (topic) {
+            case 'tweets':
+              if (data.type === 'tweet_created') {
+                io.emit('new_tweet', data.tweet);
+                // Notify followers specifically
+                const followers = await getFollowers(data.tweet.user_id);
+                followers.forEach(follower => {
+                  io.to(`user_${follower.id}`).emit('follower_tweet', data.tweet);
+                });
+              } else if (data.type === 'tweet_liked' || data.type === 'tweet_unliked') {
+                io.emit('tweet_updated', {
+                  tweet_id: data.tweet_id,
+                  type: data.type,
+                  likes_count: data.likes_count
+                });
+              } else if (data.type === 'tweet_retweeted' || data.type === 'tweet_unretweeted') {
+                io.emit('tweet_updated', {
+                  tweet_id: data.tweet_id,
+                  type: data.type,
+                  retweets_count: data.retweets_count
+                });
+              }
+              break;
+              
+            case 'follows':
+              if (data.type === 'user_followed' || data.type === 'user_unfollowed') {
+                io.to(`user_${data.following_id}`).emit('follower_update', {
+                  type: data.type,
+                  follower_id: data.follower_id,
+                  followers_count: data.followers_count
+                });
+                io.to(`user_${data.follower_id}`).emit('following_update', {
+                  type: data.type,
+                  following_id: data.following_id
+                });
+              }
+              break;
+              
+            case 'likes':
+              io.emit('like_update', {
+                tweet_id: data.tweet_id,
+                user_id: data.user_id,
+                type: data.type
+              });
+              break;
+              
+            case 'users':
+              if (data.type === 'user_registered') {
+                io.emit('new_user', data.user);
+              }
+              break;
+          }
+        } catch (error) {
+          console.error('Error processing Kafka message:', error);
+        }
+      },
+    });
     
     kafkaConnected = true;
-    console.log('Kafka connected successfully');
+    console.log('Kafka connected successfully with consumer running');
   } catch (error) {
     console.log('Kafka connection failed:', error.message);
     kafkaConnected = false;
+  }
+}
+
+// Helper function to get followers
+async function getFollowers(userId) {
+  try {
+    const result = await pool.query(
+      'SELECT follower_id as id FROM follows WHERE following_id = $1',
+      [userId]
+    );
+    return result.rows;
+  } catch (error) {
+    console.error('Error getting followers:', error);
+    return [];
   }
 }
 
@@ -224,6 +318,40 @@ async function publishToKafka(topic, message) {
     console.error('Kafka publish error:', error);
   }
 }
+
+// WebSocket connection handling
+io.on('connection', (socket) => {
+  console.log('User connected:', socket.id);
+  
+  // Handle user authentication for personalized rooms
+  socket.on('authenticate', (token) => {
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      socket.userId = decoded.userId;
+      socket.join(`user_${decoded.userId}`);
+      console.log(`User ${decoded.userId} authenticated and joined room`);
+      
+      socket.emit('authenticated', { success: true, userId: decoded.userId });
+    } catch (error) {
+      socket.emit('authenticated', { success: false, error: 'Invalid token' });
+    }
+  });
+  
+  // Handle real-time feed requests
+  socket.on('join_feed', () => {
+    socket.join('global_feed');
+    console.log('User joined global feed');
+  });
+  
+  socket.on('leave_feed', () => {
+    socket.leave('global_feed');
+    console.log('User left global feed');
+  });
+  
+  socket.on('disconnect', () => {
+    console.log('User disconnected:', socket.id);
+  });
+});
 
 // Health check endpoints
 app.get('/health', async (req, res) => {
@@ -1125,12 +1253,13 @@ app.use((error, req, res, next) => {
 initKafka();
 
 // Start server
-app.listen(PORT, () => {
-  console.log(`TweetStream API server running on port ${PORT}`);
+server.listen(PORT, () => {
+  console.log(`TweetStream API server with WebSocket running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`Database: ${process.env.DATABASE_URL ? 'Connected' : 'Using default'}`);
   console.log(`Redis: ${process.env.REDIS_URL ? 'Connected' : 'Using default'}`);
-  console.log(`Kafka: ${process.env.KAFKA_BROKER ? 'Connected' : 'Using default'}`);
+  console.log(`Kafka: ${process.env.KAFKA_BROKERS ? 'Connected' : 'Using default'}`);
+  console.log(`WebSocket: Enabled for real-time updates`);
 });
 
 // Graceful shutdown
